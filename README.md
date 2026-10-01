@@ -113,9 +113,8 @@ agent is purely heuristic. The per-decision budget (`PTCG_SEARCH_BUDGET`, defaul
 best-of-three match stays inside the 600 s overage allowance, and the heuristic
 answer is used whenever the budget is spent or the engine rejects a prediction.
 Environment switches for experiments: `PTCG_SEARCH_PROMPTS=main` (main phase only),
-`PTCG_SEARCH_HALVING=0`, `PTCG_SEARCH_HORIZON=2` (rollouts through two of our turns),
-`PTCG_SEARCH_EPSILON=0.2` (epsilon-greedy rollout policy) and `PTCG_SEARCH_MODEL=1`
-(bias the opponent's sampled hand away from cards they would have played last turn).
+`PTCG_SEARCH_HALVING=0`, `PTCG_SEARCH_HORIZON=2` (rollouts through two of our turns)
+and `PTCG_SEARCH_EPSILON=0.2` (epsilon-greedy rollout policy).
 `benchmark.py --search` plays the search agent against the heuristic opponents; the
 test suite runs with a 0.1 s budget (`tests/conftest.py`).
 
