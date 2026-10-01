@@ -38,6 +38,7 @@ OUR = POLICY
 Array = NDArray[np.float64]
 KINDS = ("policy", "policy", "policy", "policy", "search", "search", "greedy", "random", "first")
 SEARCH_BUDGET = 0.05
+STALL_LIMIT = 3000  # selections; a game still running (e.g. both players stalling) counts as a draw
 MIRROR = "mirror"
 
 
@@ -76,7 +77,7 @@ def play(job: Job) -> GameData:
     if start.errorPlayer >= 0:
         raise ValueError(f"Native deck error: {start.errorPlayer}/{start.errorType}")
     try:
-        for _ in range(10000):
+        for _ in range(STALL_LIMIT):
             obs = cast(Observation, observation)
             current, selection = obs["current"], obs["select"]
             if current is None or selection is None:
@@ -101,7 +102,8 @@ def play(job: Job) -> GameData:
             else:
                 action = opponent_action(obs, kind, rng, policies[mover])
             observation = battle_select(action)
-        raise RuntimeError("Game exceeded 10,000 selections")
+        data["labels"] = [0.5 for _ in sides]
+        return data
     finally:
         battle_finish()
         Battle.battle_ptr = None

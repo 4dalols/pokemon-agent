@@ -119,3 +119,13 @@ def test_field_pilots_are_separate_from_the_measured_agent() -> None:
     assert pilot is not POLICY and searcher.tracker is not None
     assert benchmark.pilot_for(list(POLICY.deck)) == (pilot, searcher)
     assert searcher.model is benchmark.OPPONENT_MODEL
+
+
+def test_putting_a_hand_card_back_on_the_deck_is_worse_than_ending_the_turn() -> None:
+    policy = Policy(deck_list("kangaskhan"), CARDS, ATTACKS)
+    current = state(policy.deck)
+    current["stadium"] = [{"id": card("Academy at Night"), "serial": 99, "playerIndex": 1}]
+    main = selection(0, 0)
+    main["option"] = [{"type": 10, "area": 7, "index": 0}, {"type": 14}]
+    scores = policy.scores(main, current)
+    assert scores[0] < scores[1]

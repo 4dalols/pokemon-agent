@@ -6,6 +6,7 @@ from memory import Threat
 from schema import AttackData, Card, CardData, Current, Observation, Option, Player, Selection
 
 DRAW_TEXT = re.compile(r"\b[Dd]raw\b")
+TOP_DECK_TEXT = re.compile(r"from (?:your|their) hand on top of (?:your|their) deck")
 SELF_DAMAGE = re.compile(r"does (\d+) damage to itself")
 DISCARD_OWN_ENERGY = re.compile(r"Discard (\d+|all) Energy from this Pokémon")
 RECOVER_ENERGY = re.compile(r"[Aa]ttach up to (\d+) Basic \{(\w)\} Energy cards? from your discard")
@@ -523,6 +524,10 @@ class Policy:
         if kind == 10 and card is not None and self.cards[card["id"]]["cardType"] == 0:
             return 450
         if kind in (10, 12):
+            if card is not None and TOP_DECK_TEXT.search(
+                " ".join(skill["text"] for skill in self.cards[card["id"]]["skills"])
+            ):
+                return -120
             improvement = self.best_bench(current) - self.readiness(active, current)
             return 350 + improvement if improvement > 40 else -120
         if kind == 11:

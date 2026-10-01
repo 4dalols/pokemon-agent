@@ -21,6 +21,8 @@ from search import Searcher
 from value import ValueModel, load_model
 
 OVERAGE = 600.0
+DRAW = 2
+STALL_LIMIT = 3000  # selections; a game still running (both players stalling) is a draw
 SIMPLE_OPPONENTS = ("first", "random", "greedy", "self", "main", "field")
 Job = tuple[str, int, int] | tuple[str, int, int, str | None]
 
@@ -160,16 +162,16 @@ def play_game(
     used = [0.0, 0.0]
     trace: list[dict[str, object]] = []
     try:
-        for step in range(10000):
+        for step in range(STALL_LIMIT):
             obs = cast(Observation, observation)
             current, selection = obs["current"], obs["select"]
             if current is None:
                 raise ValueError("Missing game state")
-            if current["result"] >= 0:
+            if current["result"] >= 0 or step == STALL_LIMIT - 1:
                 return GameResult(
                     opponent,
                     seat,
-                    current["result"],
+                    current["result"] if current["result"] >= 0 else DRAW,
                     step,
                     current["turn"],
                     maximum,
@@ -217,7 +219,7 @@ def play_game(
                 observation = battle_select(action)
             except IndexError as exc:
                 raise ValueError(f"Engine rejected selection: {selection}, {action}") from exc
-        raise RuntimeError("Game exceeded 10,000 selections")
+        raise AssertionError("unreachable")
     finally:
         battle_finish()
         Battle.battle_ptr = None
