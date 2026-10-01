@@ -120,8 +120,10 @@ prize values, zone sizes, special conditions) so the same model serves any deck:
   --report results/value_report.json
 ```
 
-`PTCG_VALUE_MODEL=<path>` makes the agent load a different weight file (e.g. to
-benchmark an older model); `PTCG_VALUE_MODEL=0` disables the model.
+`--deck <name>` trains for a `decks.py` candidate instead of `deck.csv`. Weight files
+for the other candidates and earlier models live under `models/` (not packaged);
+`PTCG_VALUE_MODEL=<path>` makes the agent load one of them (e.g. to benchmark an
+older model) and `PTCG_VALUE_MODEL=0` disables the model.
 
 The engine is taken from `kaggle_environments.envs.cabt.cg.sim` (present in the
 Kaggle runtime), falling back to a `cg` package on `sys.path`; without either the

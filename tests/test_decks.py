@@ -83,3 +83,29 @@ def test_draw_supporter_is_played_when_the_hand_is_clogged() -> None:
     assert policy.choose({"select": prompt, "current": current}) == [0]
     hand[7] = {"id": card("Lillie's Determination"), "serial": 30, "playerIndex": 0}
     assert policy.choose({"select": prompt, "current": current}) == [1]
+
+
+def test_field_schedule_splits_games_by_weight_and_interleaves_archetypes() -> None:
+    from collections import Counter
+
+    from benchmark import field_schedule
+
+    schedule = field_schedule({"a": 150, "b": 248, "c": 59}, 150)
+    assert len(schedule) == 150
+    assert Counter(schedule) == {"a": 49, "b": 82, "c": 19}
+    assert schedule[:4] == ["b", "a", "b", "c"]
+    assert field_schedule({"solo": 5}, 3) == ["solo"] * 3
+
+
+def test_agent_for_builds_a_full_searcher_per_deck() -> None:
+    from benchmark import agent_for
+    from main import POLICY, SEARCHER
+
+    assert agent_for(None) == (POLICY, SEARCHER)
+    assert agent_for(sorted(POLICY.deck)) == (POLICY, SEARCHER)
+    policy, searcher = agent_for(deck_list("kangaskhan"))
+    assert policy is not POLICY and sorted(policy.deck) == sorted(deck_list("kangaskhan"))
+    assert searcher.policy is policy and searcher.budget == SEARCHER.budget
+    assert searcher.model is SEARCHER.model
+    assert searcher.tracker is not None and searcher.tracker is not SEARCHER.tracker
+    assert agent_for(deck_list("kangaskhan")) == (policy, searcher)
