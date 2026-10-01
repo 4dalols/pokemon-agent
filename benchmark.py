@@ -199,12 +199,6 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("results/benchmark.json"))
     parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
     parser.add_argument(
-        "--main-worktree",
-        type=Path,
-        default=DEFAULT_WORKTREE,
-        help="Checkout of the unmodified main agent used by the `main` opponent",
-    )
-    parser.add_argument(
         "--opponent-deck",
         choices=[entry.name for entry in LIBRARY],
         help="Archetype list the first/greedy/random opponent plays instead of our deck",
@@ -220,7 +214,7 @@ def main() -> None:
         parser.error("the main opponent only plays its own deck")
     if args.games < 1 or args.workers < 1:
         parser.error("games and workers must be positive")
-    if "main" in args.opponents:
+    if "main" in args.opponents or args.agent == "main":
         ensure_worktree(args.main_worktree)
     jobs = [(name, i % 2, i) for name in args.opponents for i in range(args.games)]
     opponent_deck = None
