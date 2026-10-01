@@ -13,6 +13,7 @@ from typing import cast
 from assets import ROOT
 from decks import DECKS, deck_list
 from engine import SOURCE, Battle, battle_finish, battle_select, battle_start
+from field import PANEL, panel_weights
 from main import ATTACKS, CARDS, POLICY, SEARCHER
 from policy import Policy
 from reference import ReferenceAgent, ensure_reference
@@ -20,7 +21,7 @@ from schema import Observation
 from search import Searcher, load_engine
 
 MAIN_REF = ROOT / "results" / "main-ref"
-SIMPLE_OPPONENTS = ("first", "random", "greedy", "self", "main")
+SIMPLE_OPPONENTS = ("first", "random", "greedy", "self", "main", "field")
 
 AGENTS: dict[str, tuple[Policy, Searcher]] = {}
 REFERENCES: dict[tuple[Path, bool], ReferenceAgent] = {}
@@ -105,6 +106,9 @@ def play_game(
     rival: tuple[Policy, Searcher] | None = None
     if opponent.startswith("deck:"):
         rival = agent_for(opponent[5:])
+    elif opponent.startswith("field:"):
+        rival = agent_for(opponent[6:])
+        opponent_search = opponent_search or search
     elif opponent == "self":
         rival = policy, searcher
     if reference is not None:
@@ -176,25 +180,68 @@ def play_game(
             trace_path.write_text(json.dumps(trace, indent=2))
 
 
+def wilson(wins: int, n: int) -> list[float]:
+    z = 1.96
+    proportion = wins / n
+    denominator = 1 + z * z / n
+    center = (proportion + z * z / (2 * n)) / denominator
+    margin = z * (proportion * (1 - proportion) / n + z * z / (4 * n * n)) ** 0.5 / denominator
+    return [max(0.0, center - margin), min(1.0, center + margin)]
+
+
+def field_jobs(games: int, offset: int) -> list[tuple[str, int, int]]:
+    """Games against the ladder panel, allocated to archetypes in proportion to their entries."""
+    weights = panel_weights()
+    counts = {slug: int(games * weight) for slug, weight in weights.items()}
+    remainders = sorted(weights, key=lambda slug: counts[slug] - games * weights[slug])
+    for slug in remainders[: games - sum(counts.values())]:
+        counts[slug] += 1
+    jobs: list[tuple[str, int, int]] = []
+    for slug, count in counts.items():
+        base = offset + len(jobs)
+        jobs.extend((f"field:{slug}", i % 2, base + i) for i in range(count))
+    return jobs
+
+
+def field_summary(groups: dict[str, dict[str, object]]) -> dict[str, object] | None:
+    """Pooled and entry-weighted win rate over the ``field:<archetype>`` groups."""
+    weights = panel_weights()
+    present = {name[6:]: entry for name, entry in groups.items() if name.startswith("field:")}
+    if not present:
+        return None
+    wins = sum(cast(int, entry["wins"]) for entry in present.values())
+    games = sum(cast(int, entry["games"]) for entry in present.values())
+    total_weight = sum(weights[slug] for slug in present)
+    weighted = sum(
+        weights[slug] * cast(float, entry["win_rate"]) / total_weight
+        for slug, entry in present.items()
+    )
+    return {
+        "games": games,
+        "wins": wins,
+        "losses": games - wins - sum(cast(int, entry["draws"]) for entry in present.values()),
+        "win_rate": wins / games,
+        "wilson_95": wilson(wins, games),
+        "weighted_win_rate": weighted,
+        "max_decision_ms": max(cast(float, entry["max_decision_ms"]) for entry in present.values()),
+        "archetypes": {slug: PANEL[slug]["name"] for slug in present},
+    }
+
+
 def summary(results: list[GameResult], wall_seconds: float | None = None) -> dict[str, object]:
-    groups: dict[str, object] = {}
+    groups: dict[str, dict[str, object]] = {}
     for name in sorted({result.opponent for result in results}):
         group = [result for result in results if result.opponent == name]
         wins = sum(result.winner == result.baseline_seat for result in group)
         draws = sum(result.winner not in (0, 1) for result in group)
         n = len(group)
-        proportion = wins / n
-        z = 1.96
-        denominator = 1 + z * z / n
-        center = (proportion + z * z / (2 * n)) / denominator
-        margin = z * (proportion * (1 - proportion) / n + z * z / (4 * n * n)) ** 0.5 / denominator
         entry: dict[str, object] = {
             "games": n,
             "wins": wins,
             "draws": draws,
             "losses": n - wins - draws,
-            "win_rate": proportion,
-            "wilson_95": [center - margin, center + margin],
+            "win_rate": wins / n,
+            "wilson_95": wilson(wins, n),
             "max_decision_ms": max(result.max_decision_ms for result in group),
             "opponent_max_decision_ms": max(result.opponent_max_decision_ms for result in group),
             "mean_game_seconds": sum(result.seconds for result in group) / n,
@@ -204,7 +251,11 @@ def summary(results: list[GameResult], wall_seconds: float | None = None) -> dic
         if wall_seconds:
             entry["games_per_second"] = len(results) / wall_seconds
         groups[name] = entry
-    return groups
+    field = field_summary(groups)
+    report: dict[str, object] = dict(groups)
+    if field is not None:
+        report["field"] = field
+    return report
 
 
 def main() -> None:
@@ -216,7 +267,8 @@ def main() -> None:
         nargs="+",
         type=validate_opponent,
         default=["first", "random", "greedy", "self"],
-        help="first, random, greedy, self, main (unmodified main checkout) or deck:<name>",
+        help="first, random, greedy, self, main (unmodified main checkout), field (ladder panel) "
+        "or deck:<name>",
     )
     parser.add_argument("--deck", choices=sorted(DECKS), help="Candidate deck (default deck.csv)")
     parser.add_argument("--output", type=Path, default=Path("results/benchmark.json"))
@@ -230,7 +282,12 @@ def main() -> None:
         parser.error("games and workers must be positive")
     if "main" in args.opponents:
         ensure_reference(args.main_ref)
-    jobs = [(name, i % 2, i) for name in args.opponents for i in range(args.games)]
+    jobs: list[tuple[str, int, int]] = []
+    for name in args.opponents:
+        if name == "field":
+            jobs.extend(field_jobs(args.games, len(jobs)))
+        else:
+            jobs.extend((name, i % 2, len(jobs) + i) for i in range(args.games))
     play = partial(
         play_game,
         search=args.search,

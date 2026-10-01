@@ -83,3 +83,33 @@ def test_draw_supporter_is_played_when_the_hand_is_clogged() -> None:
     assert policy.choose({"select": prompt, "current": current}) == [0]
     hand[7] = {"id": card("Lillie's Determination"), "serial": 30, "playerIndex": 0}
     assert policy.choose({"select": prompt, "current": current}) == [1]
+
+
+def test_ex_attackers_do_not_count_damage_against_an_immune_defender() -> None:
+    policy = Policy(deck_list("abomasnow"), CARDS, ATTACKS)
+    current = state(policy.deck)
+    me, them = (
+        current["players"][current["yourIndex"]],
+        current["players"][1 - current["yourIndex"]],
+    )
+    mega: Card = {
+        "id": card("Mega Abomasnow ex"),
+        "serial": 1,
+        "playerIndex": 0,
+        "energies": [3, 3, 3],
+    }
+    kyogre: Card = {"id": card("Kyogre"), "serial": 2, "playerIndex": 0, "energies": [3, 3, 3]}
+    crustle: Card = {"id": card("Crustle"), "serial": 3, "playerIndex": 1, "hp": 140, "maxHp": 140}
+    them["active"] = [crustle]
+    me["active"] = [mega]
+    assert policy.best_damage(current) == 0
+    frost_barrier = CARDS[card("Mega Abomasnow ex")]["attacks"][0]
+    me["active"] = [kyogre]
+    assert policy.best_damage(current) > 0
+    me["active"] = [mega]
+    them["active"] = [
+        {"id": card("Kyogre"), "serial": 4, "playerIndex": 1, "hp": 140, "maxHp": 140}
+    ]
+    open_score = policy.attack_score(frost_barrier, current)
+    them["active"] = [crustle]
+    assert policy.attack_score(frost_barrier, current) < open_score - 100

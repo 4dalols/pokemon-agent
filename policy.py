@@ -8,6 +8,9 @@ DRAW_TEXT = re.compile(r"\b[Dd]raw\b")
 SELF_DAMAGE = re.compile(r"does (\d+) damage to itself")
 DISCARD_OWN_ENERGY = re.compile(r"Discard (\d+|all) Energy from this Pokémon")
 RECOVER_ENERGY = re.compile(r"[Aa]ttach up to (\d+) Basic \{(\w)\} Energy cards? from your discard")
+IMMUNITY = re.compile(
+    r"Prevent all damage done to this Pokémon by attacks from your opponent’s Pokémon \{ex\}"
+)
 PRIZE_SCALING = re.compile(r"(\d+) more damage .* for each Prize card your opponent has taken")
 COUNTER_SCALING = re.compile(r"(\d+) more damage for each damage counter on this Pokémon")
 SEARCH_ATTACH = re.compile(r"Search your deck for a Basic \{\w\} Energy card and attach")
@@ -399,6 +402,8 @@ class Policy:
             multiplier = 2 if target["weakness"] == attacking_type else 1
             resistance = 30 if target["resistance"] == attacking_type else 0
         effective = max(0, damage * multiplier - resistance)
+        if active and defending and self.immune(defending, active):
+            effective = 0
         hp = defending.get("hp", 0) if defending else 0
         ko_probability = float(hp > 0 and effective >= hp)
         water, unseen = self.unseen_energy(current)
@@ -447,9 +452,18 @@ class Policy:
         damage = self.estimate(attack, active, current)
         opponent = current["players"][1 - current["yourIndex"]]
         defending = self.active(opponent)
+        if defending and self.immune(defending, active):
+            return 0
         if defending and self.cards[defending["id"]]["weakness"] == attacking_type:
             damage *= 2
         return damage
+
+    def immune(self, defender: Card, attacker: Card) -> bool:
+        """Whether the defender's Ability blocks all attack damage from this attacker."""
+        attacker_data = self.cards[attacker["id"]]
+        if not (attacker_data["ex"] or attacker_data["megaEx"]):
+            return False
+        return any(IMMUNITY.search(skill["text"]) for skill in self.cards[defender["id"]]["skills"])
 
     def gust_worth(self, current: Current) -> float:
         opponent = current["players"][1 - current["yourIndex"]]

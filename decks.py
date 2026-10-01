@@ -1,5 +1,7 @@
 """Candidate 60-card decks keyed by archetype name (card ID -> copies)."""
 
+from field import PANEL
+
 DECKS: dict[str, dict[int, int]] = {
     # Current main deck: Mega Abomasnow ex / Kyogre Water deck.
     "abomasnow": {
@@ -135,6 +137,8 @@ DECKS: dict[str, dict[int, int]] = {
         8: 14,
     },
 }
+
+DECKS.update({slug: dict(archetype["cards"]) for slug, archetype in PANEL.items()})
 
 DEFAULT_DECK = "abomasnow"
 
