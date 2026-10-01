@@ -38,7 +38,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python prepare_assets.py
 .venv/bin/ruff check .
-.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py prepare_assets.py benchmark.py package.py tests
+.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py snapshot.py prepare_assets.py benchmark.py package.py tests
 .venv/bin/pytest -q
 .venv/bin/python benchmark.py --games 100 --workers 4 --output results/benchmark.json
 .venv/bin/python package.py
@@ -75,20 +75,28 @@ combinations, or include a learned model.
 ## Rollout search
 
 `search.py` wraps the heuristic with determinized rollouts on the native engine's
-search API (`SearchBegin`/`SearchStep`). At each main-phase decision after turn 1 it
-samples the hidden cards (own deck order and prizes, the opponent's deck, prizes and
-hand, mirroring our deck list when the cards seen so far allow it), plays the top
-heuristic candidates through the simulator with the heuristic acting for both sides
-until the opponent's next turn ends, and picks the candidate with the best averaged
-prize/board outcome; terminal wins and losses dominate. Every other prompt stays
-heuristic.
+search API (`SearchBegin`/`SearchStep`). At every searchable prompt after turn 1
+(main phase, and card prompts such as switch/promote, bench, evolution, attach and
+discard targets; energy-payment prompts stay heuristic) it samples the hidden cards
+(own deck order and prizes, the opponent's deck, prizes and hand, mirroring our deck
+list when the cards seen so far allow it), plays distinct candidate answers through
+the simulator with the heuristic acting for both sides until the opponent's next turn
+ends, and picks the candidate with the best averaged prize/board outcome; terminal
+wins and losses dominate. Candidates are the heuristic answer plus its single-card
+variations, and successive halving drops the weaker half of the field at fixed
+fractions of the time budget so the survivors get more determinizations.
 
 The engine is taken from `kaggle_environments.envs.cabt.cg.sim` (present in the
 Kaggle runtime), falling back to a `cg` package on `sys.path`; without either the
 agent is purely heuristic. The per-decision budget (`PTCG_SEARCH_BUDGET`, default
-1.5 s; `PTCG_SEARCH_CANDIDATES`, default 6) shrinks with `remainingOverageTime` so a
+1.5 s; `PTCG_SEARCH_CANDIDATES`, default 8) is capped from `remainingOverageTime`
+(pool minus a 60 s reserve, spread over 40 decisions per remaining game) so a
 best-of-three match stays inside the 600 s overage allowance, and the heuristic
 answer is used whenever the budget is spent or the engine rejects a prediction.
+Environment switches for experiments: `PTCG_SEARCH_PROMPTS=main` (main phase only),
+`PTCG_SEARCH_HALVING=0`, `PTCG_SEARCH_HORIZON=2` (rollouts through two of our turns),
+`PTCG_SEARCH_EPSILON=0.2` (epsilon-greedy rollout policy) and `PTCG_SEARCH_MODEL=1`
+(bias the opponent's sampled hand away from cards they would have played last turn).
 `benchmark.py --search` plays the search agent against the heuristic opponents; the
 test suite runs with a 0.1 s budget (`tests/conftest.py`).
 
@@ -96,7 +104,12 @@ test suite runs with a 0.1 s budget (`tests/conftest.py`).
 
 `benchmark.py` validates selection counts and indices before every native action.
 Native rejections and games exceeding 10,000 decisions raise errors rather than
-being hidden as losses. Seats alternate. The default opponents use the same deck:
+being hidden as losses. Seats alternate. Each side is handed a simulated 600 s
+`remainingOverageTime` pool that shrinks with its own decision time, and the report
+includes the largest per-game overage spend. `--opponents main` (or `main:<ref>`)
+plays a frozen copy of the agent exported from that git ref with `git archive`
+(`snapshot.py`, cached under `results/snapshots/`, imported with its stock settings),
+which is how changes are judged head-to-head against the unmodified `main` branch. The default opponents use the same deck:
 
 - `first`: take the first legal options.
 - `random`: choose random legal option positions.

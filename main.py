@@ -11,7 +11,12 @@ SEARCHER = Searcher(
     POLICY,
     load_engine(),
     budget=float(os.environ.get("PTCG_SEARCH_BUDGET", "1.5")),
-    candidates=int(os.environ.get("PTCG_SEARCH_CANDIDATES", "6")),
+    candidates=int(os.environ.get("PTCG_SEARCH_CANDIDATES", "8")),
+    prompts=os.environ.get("PTCG_SEARCH_PROMPTS", "all"),
+    halving=os.environ.get("PTCG_SEARCH_HALVING", "1") == "1",
+    horizon=int(os.environ.get("PTCG_SEARCH_HORIZON", "1")),
+    epsilon=float(os.environ.get("PTCG_SEARCH_EPSILON", "0")),
+    model=os.environ.get("PTCG_SEARCH_MODEL", "0") == "1",
 )
 
 

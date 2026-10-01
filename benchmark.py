@@ -12,6 +12,12 @@ from typing import cast
 from engine import SOURCE, Battle, battle_finish, battle_select, battle_start
 from main import ATTACKS, POLICY, SEARCHER
 from schema import Observation
+from snapshot import Agent, export, load_agent
+
+ROOT = Path(__file__).resolve().parent
+SNAPSHOTS = ROOT / "results/snapshots"
+FROZEN: dict[str, Agent] = {}
+OVERAGE = 600.0
 
 
 @dataclass
@@ -22,12 +28,22 @@ class GameResult:
     steps: int
     turns: int
     max_decision_ms: float
+    opponent_max_decision_ms: float
     seconds: float
+    overage_used: list[float]
     contexts: list[int]
+
+
+def frozen_agent(ref: str) -> Agent:
+    if ref not in FROZEN:
+        FROZEN[ref] = load_agent(export(ref, ROOT, SNAPSHOTS))
+    return FROZEN[ref]
 
 
 def opponent_action(observation: Observation, kind: str, rng: random.Random) -> list[int]:
     selection = observation["select"]
+    if kind.startswith("main"):
+        return frozen_agent(kind.partition(":")[2] or "main")(observation)
     if selection is None:
         return POLICY.deck.copy()
     options = selection["option"]
@@ -60,6 +76,8 @@ def play_game(
         raise ValueError(f"Native deck error: {start.errorPlayer}/{start.errorType}")
     contexts: set[int] = set()
     maximum = 0.0
+    opponent_maximum = 0.0
+    used = [0.0, 0.0]
     trace: list[dict[str, object]] = []
     try:
         for step in range(10000):
@@ -75,21 +93,29 @@ def play_game(
                     step,
                     current["turn"],
                     maximum,
+                    opponent_maximum,
                     time.perf_counter() - started,
+                    used,
                     sorted(contexts),
                 )
             if selection is None:
                 raise ValueError("Missing live selection")
             contexts.add(selection["context"])
+            mover = current["yourIndex"]
+            obs["remainingOverageTime"] = OVERAGE - used[mover]
             decision_started = time.perf_counter()
-            if current["yourIndex"] == seat and search:
-                action = SEARCHER.choose(obs)
-                maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
-            elif current["yourIndex"] == seat or opponent == "self":
+            if mover == seat and search:
+                action = SEARCHER.choose(obs, obs["remainingOverageTime"])
+            elif mover == seat or opponent == "self":
                 action = POLICY.choose(obs)
-                maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
             else:
                 action = opponent_action(obs, opponent, rng)
+            duration = time.perf_counter() - decision_started
+            used[mover] += duration
+            if mover == seat:
+                maximum = max(maximum, duration * 1000)
+            else:
+                opponent_maximum = max(opponent_maximum, duration * 1000)
             if trace_path:
                 trace.append({"observation": obs, "action": action})
             if not selection["minCount"] <= len(action) <= selection["maxCount"]:
@@ -131,6 +157,12 @@ def summary(results: list[GameResult]) -> dict[str, object]:
             "win_rate": proportion,
             "wilson_95": [center - margin, center + margin],
             "max_decision_ms": max(result.max_decision_ms for result in group),
+            "opponent_max_decision_ms": max(result.opponent_max_decision_ms for result in group),
+            "mean_game_seconds": sum(result.seconds for result in group) / n,
+            "max_overage_used": max(result.overage_used[result.baseline_seat] for result in group),
+            "opponent_max_overage_used": max(
+                result.overage_used[1 - result.baseline_seat] for result in group
+            ),
             "mean_turns": sum(result.turns for result in group) / n,
             "seats": dict(Counter(result.baseline_seat for result in group)),
         }
@@ -144,23 +176,34 @@ def main() -> None:
     parser.add_argument(
         "--opponents",
         nargs="+",
-        choices=["first", "random", "greedy", "self"],
         default=["first", "random", "greedy", "self"],
+        help="first, random, greedy, self, or main[:<git ref>] for a frozen copy of the agent",
     )
     parser.add_argument("--output", type=Path, default=Path("results/benchmark.json"))
     parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
     args = parser.parse_args()
     if args.games < 1 or args.workers < 1:
         parser.error("games and workers must be positive")
+    for name in args.opponents:
+        if name not in ("first", "random", "greedy", "self") and not name.startswith("main"):
+            parser.error(f"unknown opponent {name}")
+    for name in args.opponents:
+        if name.startswith("main"):
+            export(name.partition(":")[2] or "main", ROOT, SNAPSHOTS)
     jobs = [(name, i % 2, i) for name in args.opponents for i in range(args.games)]
+    started = time.perf_counter()
     if args.workers == 1:
         results = [play_game(job, search=args.search) for job in jobs]
     else:
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
             results = list(executor.map(partial(play_game, search=args.search), jobs))
+    elapsed = time.perf_counter() - started
     report = {
         "engine": SOURCE,
         "search": args.search,
+        "workers": args.workers,
+        "wall_seconds": elapsed,
+        "games_per_second": len(jobs) / elapsed,
         "native_rng": "No native seed exposed; Python seed controls only random opponent",
         "summary": summary(results),
         "games": [asdict(result) for result in results],
@@ -168,6 +211,7 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2))
     print(json.dumps(report["summary"], indent=2))
+    print(f"{len(jobs)} games in {elapsed:.0f} s ({len(jobs) / elapsed:.3f} games/s)")
 
 
 if __name__ == "__main__":
