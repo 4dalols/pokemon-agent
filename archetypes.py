@@ -6,6 +6,7 @@ revealed cards it fails to explain, mixes that with the list's ladder frequency 
 samples the opponent's hidden cards (deck, hand, prizes) from the chosen list.
 """
 
+import itertools
 import math
 import random
 from collections import Counter
@@ -996,6 +997,49 @@ LIBRARY: tuple[Archetype, ...] = (
 )
 
 
+class Sampler:
+    """Cheap per-rollout determinizations of the opponent's hidden zones."""
+
+    def __init__(
+        self,
+        rng: random.Random,
+        pools: list[Counter[int]],
+        weights: list[float],
+        sizes: dict[int, int],
+        placements: list[tuple[int, list[int], list[float]]],
+        filler: int,
+    ) -> None:
+        self.rng = rng
+        self.pools = pools
+        self.cumulative = list(itertools.accumulate(weights))
+        self.sizes = sizes
+        self.placements = placements
+        self.filler = filler
+
+    def sample(self) -> tuple[list[int], list[int], list[int]]:
+        pool = self.pools[self.rng.choices(range(len(self.pools)), cum_weights=self.cumulative)[0]]
+        pool = pool.copy()
+        zones: dict[int, list[int]] = {DECK: [], HAND: [], PRIZE: []}
+        for card_id, areas, probabilities in self.placements:
+            if pool[card_id] <= 0:
+                continue
+            area = self.rng.choices(areas, probabilities)[0]
+            if len(zones[area]) < self.sizes[area]:
+                zones[area].append(card_id)
+                pool[card_id] -= 1
+        rest = list(pool.elements())
+        self.rng.shuffle(rest)
+        needed = sum(self.sizes.values()) - sum(len(zone) for zone in zones.values())
+        if len(rest) < needed:
+            rest.extend([self.filler] * (needed - len(rest)))
+        for area, zone in zones.items():
+            take = self.sizes[area] - len(zone)
+            zone.extend(rest[:take])
+            del rest[:take]
+            self.rng.shuffle(zone)
+        return zones[DECK], zones[HAND], zones[PRIZE]
+
+
 class Predictor:
     def __init__(
         self,
@@ -1044,38 +1088,34 @@ class Predictor:
         self, theirs: Player, current: Current, side: Side, revealed: Counter[int]
     ) -> tuple[list[int], list[int], list[int]] | None:
         """Sample (deck, hand, prizes) for the opponent, or None if no list fits."""
-        entry = self.choose(revealed)
-        if entry is None:
+        sampler = self.prepare(theirs, current, side, revealed)
+        return None if sampler is None else sampler.sample()
+
+    def prepare(
+        self, theirs: Player, current: Current, side: Side, revealed: Counter[int]
+    ) -> Sampler | None:
+        """Precompute everything that is constant for one decision's determinizations."""
+        weights = self.weights(revealed)
+        if sum(weights) < MIN_TOTAL_WEIGHT:
             return None
+        seen = Counter(visible(theirs, current))
         sizes = {
             DECK: theirs["deckCount"],
             HAND: theirs["handCount"],
             PRIZE: sum(card is None for card in theirs["prize"]),
         }
-        pool = entry.cards - Counter(visible(theirs, current))
-        zones: dict[int, list[int]] = {DECK: [], HAND: [], PRIZE: []}
-        for serial, probabilities in side.hidden.items():
-            card_id = side.identity.get(serial)
-            if card_id is None or pool[card_id] <= 0:
-                continue
-            areas = [area for area in zones if probabilities[area] > 0]
-            if not areas:
-                continue
-            area = self.rng.choices(areas, [probabilities[a] for a in areas])[0]
-            if len(zones[area]) < sizes[area]:
-                zones[area].append(card_id)
-                pool[card_id] -= 1
-        rest = list(pool.elements())
-        self.rng.shuffle(rest)
-        needed = sum(sizes.values()) - sum(len(z) for z in zones.values())
-        if len(rest) < needed:
-            rest.extend([self.filler(theirs)] * (needed - len(rest)))
-        for area, zone in zones.items():
-            take = sizes[area] - len(zone)
-            zone.extend(rest[:take])
-            del rest[:take]
-            self.rng.shuffle(zone)
-        return zones[DECK], zones[HAND], zones[PRIZE]
+        known = [
+            (card_id, [a for a in sizes if probabilities[a] > 0])
+            for serial, probabilities in side.hidden.items()
+            if (card_id := side.identity.get(serial)) is not None
+        ]
+        placements = [
+            (card_id, areas, [side.hidden[serial][a] for a in areas])
+            for (card_id, areas), serial in zip(known, side.hidden, strict=True)
+            if areas
+        ]
+        pools = [entry.cards - seen for entry in self.library]
+        return Sampler(self.rng, pools, weights, sizes, placements, self.filler(theirs))
 
     def filler(self, theirs: Player) -> int:
         types = Counter(

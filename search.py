@@ -15,7 +15,7 @@ import time
 from collections import Counter
 from typing import TypedDict, cast
 
-from archetypes import Predictor
+from archetypes import Predictor, Sampler
 from memory import Threat, Tracker
 from policy import Policy
 from schema import Current, Observation, Player
@@ -91,6 +91,11 @@ class Searcher:
             if card["cardType"] == 5 and card["name"].startswith("Basic ")
         }
         self.predictor = Predictor(policy.deck, policy.cards, self.rng)
+        self.prepared_for: Current | None = None
+        self.own_fixed: tuple[list[int], list[int]] | None = None
+        self.own_unseen: list[int] = []
+        self.enemy_sampler: Sampler | None = None
+        self.enemy_uniform: list[int] = []
         self.basics = [
             card["cardId"]
             for card in policy.cards.values()
@@ -157,15 +162,32 @@ class Searcher:
             self.tracker.reset()
             self.policy.threat = Threat()
 
+    def prepare(self, current: Current) -> None:
+        """Resolve the tracker/predictor once per decision; rollouts only reshuffle."""
+        if self.prepared_for is current:
+            return
+        me = current["yourIndex"]
+        mine, theirs = current["players"][me], current["players"][1 - me]
+        self.own_fixed = None
+        self.enemy_sampler = None
+        if self.tracker is not None:
+            self.own_fixed = self.tracker.own_hidden(mine, current)
+            side = self.tracker.opponent(current)
+            revealed = self.tracker.revealed(theirs, current)
+            self.enemy_sampler = self.predictor.prepare(theirs, current, side, revealed)
+        self.own_unseen = list((self.deck_pool - Counter(self.seen(mine))).elements())
+        self.enemy_uniform = self.enemy_pool(theirs)
+        self.prepared_for = current
+
     def own_hidden(self, mine: Player, current: Current) -> tuple[list[int], list[int]] | None:
         """Our (deck, prizes): exact from the tracker when known, otherwise sampled."""
-        if self.tracker is not None:
-            exact = self.tracker.own_hidden(mine, current)
-            if exact is not None:
-                deck, prizes = exact
-                self.rng.shuffle(deck)
-                return deck, prizes
-        own_unseen = list((self.deck_pool - Counter(self.seen(mine))).elements())
+        self.prepare(current)
+        if self.own_fixed is not None:
+            deck, prizes = self.own_fixed
+            deck = list(deck)
+            self.rng.shuffle(deck)
+            return deck, list(prizes)
+        own_unseen = list(self.own_unseen)
         self.rng.shuffle(own_unseen)
         hidden_prizes = sum(card is None for card in mine["prize"])
         if len(own_unseen) < hidden_prizes + mine["deckCount"]:
@@ -176,13 +198,10 @@ class Searcher:
         self, theirs: Player, current: Current
     ) -> tuple[list[int], list[int], list[int]]:
         """Opponent (deck, hand, prizes) from the archetype mixture, else the old pool."""
-        if self.tracker is not None:
-            side = self.tracker.opponent(current)
-            revealed = self.tracker.revealed(theirs, current)
-            sampled = self.predictor.sample(theirs, current, side, revealed)
-            if sampled is not None:
-                return sampled
-        enemy = self.enemy_pool(theirs)
+        self.prepare(current)
+        if self.enemy_sampler is not None:
+            return self.enemy_sampler.sample()
+        enemy = list(self.enemy_uniform)
         self.rng.shuffle(enemy)
         enemy_prizes = sum(card is None for card in theirs["prize"])
         enemy_hand = theirs["handCount"]
