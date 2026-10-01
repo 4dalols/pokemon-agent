@@ -127,6 +127,10 @@ being hidden as losses. Seats alternate. The default opponents use the same deck
 
 `--deck <name>` makes the benchmarked agent play a candidate deck instead of the one in
 `deck.csv`, so candidates can be round-robined against each other and against `main`.
+`--seed-offset` extends a finished run with fresh game seeds. A game still running after
+`--max-turns` (default 200; no decided game has ever passed 70) is scored as a draw, so a
+pair of decks that cannot finish each other (seen with Hydrapple vs Kangaskhan/Latias at
+1,000+ turns) does not hang the run.
 
 Parallel games run in separate processes because the native battle is process-global.
 The native API exposes no seed parameter. Python seeds control only the random
