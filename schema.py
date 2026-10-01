@@ -43,7 +43,7 @@ class Option(TypedDict):
     type: int
     index: NotRequired[int]
     area: NotRequired[int]
-    playerIndex: NotRequired[int]
+    playerIndex: NotRequired[int | None]
     inPlayArea: NotRequired[int]
     inPlayIndex: NotRequired[int]
     energyIndex: NotRequired[int]
@@ -70,6 +70,8 @@ class Selection(TypedDict):
 class Observation(TypedDict):
     select: Selection | None
     current: Current | None
+    search_begin_input: NotRequired[str | None]
+    remainingOverageTime: NotRequired[float]
 
 
 class Skill(TypedDict):

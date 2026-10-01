@@ -20,14 +20,26 @@ class Policy:
         options = selection["option"]
         if current is None or not options:
             return list(range(min(selection["minCount"], len(options))))
-        scores = [self.score(option, selection, current) for option in options]
-        ranked = sorted(range(len(options)), key=lambda index: (-scores[index], index))
+        scores = self.scores(selection, current)
+        ranked = self.rank(scores)
         if selection["type"] == 4:
             return self.pay_energy(ranked, options, selection)
         count = min(selection["maxCount"], len(options))
         if selection["minCount"] == 0:
             count = min(count, sum(score > 0 for score in scores))
         return ranked[: max(selection["minCount"], count)]
+
+    @staticmethod
+    def player_index(option: Option, current: Current) -> int:
+        index = option.get("playerIndex")
+        return current["yourIndex"] if index is None else index
+
+    def scores(self, selection: Selection, current: Current) -> list[float]:
+        return [self.score(option, selection, current) for option in selection["option"]]
+
+    @staticmethod
+    def rank(scores: list[float]) -> list[int]:
+        return sorted(range(len(scores)), key=lambda index: (-scores[index], index))
 
     @staticmethod
     def pay_energy(ranked: list[int], options: list[Option], selection: Selection) -> list[int]:
@@ -47,7 +59,7 @@ class Policy:
     def resolve(self, option: Option, selection: Selection, current: Current) -> Card | None:
         area = option.get("area", 2)
         index = option.get("index", 0)
-        player = current["players"][option.get("playerIndex", current["yourIndex"])]
+        player = current["players"][self.player_index(option, current)]
         zones: dict[int, list[Card | None]] = {
             1: list(selection["deck"] or []),
             2: list(player["hand"] or []),
@@ -259,7 +271,7 @@ class Policy:
             if context == 1:
                 return 200 if card and self.cards[card["id"]]["name"] == "Snover" else 50
             if context in (3, 4):
-                if option.get("playerIndex", current["yourIndex"]) != current["yourIndex"]:
+                if self.player_index(option, current) != current["yourIndex"]:
                     return 400 - (card.get("hp", 0) if card else 0)
                 return self.readiness(card, current)
             if context in (13, 14, 15):
