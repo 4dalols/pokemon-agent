@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from assets import ROOT, load_deck, validate_deck
-from benchmark import GameResult, field_jobs, summary
+from benchmark import DRAW, GameResult, field_jobs, play_game, summary, wilson
 from decks import DECKS
 from field import PANEL, panel_weights
 from main import CARDS
@@ -55,3 +55,19 @@ def test_deck_file_can_be_overridden(tmp_path: Path, monkeypatch: pytest.MonkeyP
     alt.write_text("\n".join(str(i) for i in load_deck(ROOT, CARDS)) + "\n")
     monkeypatch.setitem(os.environ, "PTCG_DECK_FILE", str(alt))
     assert load_deck(tmp_path, CARDS) == load_deck(ROOT, CARDS)
+
+
+def test_games_past_the_turn_cap_are_scored_as_draws() -> None:
+    result = play_game(("field:thwackey-dipplin", 0, 0), deck="abomasnow", max_turns=0)
+    assert result.winner == DRAW
+    assert result.turns == 1
+    field = summary([result])["field"]
+    assert isinstance(field, dict)
+    assert {key: field[key] for key in ("games", "wins", "draws", "losses", "win_rate")} == {
+        "games": 1,
+        "wins": 0,
+        "draws": 1,
+        "losses": 0,
+        "win_rate": 0.0,
+    }
+    assert field["wilson_95"] == wilson(0, 1)

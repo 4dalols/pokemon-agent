@@ -21,6 +21,8 @@ from schema import Observation
 from search import Searcher, load_engine
 
 MAIN_REF = ROOT / "results" / "main-ref"
+MAX_TURNS = 200
+DRAW = 2
 SIMPLE_OPPONENTS = ("first", "random", "greedy", "self", "main", "field")
 
 AGENTS: dict[str, tuple[Policy, Searcher]] = {}
@@ -97,6 +99,7 @@ def play_game(
     deck: str | None = None,
     opponent_search: bool = False,
     main_ref: Path = MAIN_REF,
+    max_turns: int = MAX_TURNS,
 ) -> GameResult:
     opponent, seat, seed = job
     rng = random.Random(seed)
@@ -131,11 +134,11 @@ def play_game(
             current, selection = obs["current"], obs["select"]
             if current is None:
                 raise ValueError("Missing game state")
-            if current["result"] >= 0:
+            if current["result"] >= 0 or current["turn"] > max_turns:
                 return GameResult(
                     opponent,
                     seat,
-                    current["result"],
+                    current["result"] if current["result"] >= 0 else DRAW,
                     step,
                     current["turn"],
                     maximum,
@@ -211,6 +214,7 @@ def field_summary(groups: dict[str, dict[str, object]]) -> dict[str, object] | N
         return None
     wins = sum(cast(int, entry["wins"]) for entry in present.values())
     games = sum(cast(int, entry["games"]) for entry in present.values())
+    draws = sum(cast(int, entry["draws"]) for entry in present.values())
     total_weight = sum(weights[slug] for slug in present)
     weighted = sum(
         weights[slug] * cast(float, entry["win_rate"]) / total_weight
@@ -219,7 +223,8 @@ def field_summary(groups: dict[str, dict[str, object]]) -> dict[str, object] | N
     return {
         "games": games,
         "wins": wins,
-        "losses": games - wins - sum(cast(int, entry["draws"]) for entry in present.values()),
+        "draws": draws,
+        "losses": games - wins - draws,
         "win_rate": wins / games,
         "wilson_95": wilson(wins, games),
         "weighted_win_rate": weighted,
@@ -282,6 +287,12 @@ def main() -> None:
     parser.add_argument(
         "--opponent-search", action="store_true", help="self/deck opponents use rollout search"
     )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=MAX_TURNS,
+        help="score a game still running after this many turns as a draw",
+    )
     parser.add_argument("--main-ref", type=Path, default=MAIN_REF, help="Checkout of main")
     args = parser.parse_args()
     if args.games < 1 or args.workers < 1:
@@ -301,6 +312,7 @@ def main() -> None:
         deck=args.deck,
         opponent_search=args.opponent_search,
         main_ref=args.main_ref,
+        max_turns=args.max_turns,
     )
     started = time.perf_counter()
     if args.workers == 1:
