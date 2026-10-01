@@ -1,10 +1,11 @@
 # Pokémon TCG CPU baseline
 
 A strategy-based agent for the Pokémon TCG AI Battle Challenge (Kaggle Playground).
-The primary candidate is the exact Dragapult ex list supplied from the Playground
-leaders. Hydrapple/Ogerpon/Meganium, Mega Kangaskhan/Slowking and the original
-Mega Abomasnow/Kyogre remain selectable for comparison. Validation uses the official
-Playground SDK (R2 card pool, 1431 cards) and the best-of-three Kaggle environment.
+The default remains Mega Abomasnow/Kyogre after the four-deck round robin. The exact
+Playground Dragapult and Hydrapple/Ogerpon/Meganium lists and a Mega Kangaskhan/Slowking
+port remain selectable for comparison. None of the tested finalists beat frozen main;
+these changes are an experimental draft. Validation uses the official Playground SDK
+(R2 card pool, 1431 cards) and the best-of-three Kaggle environment.
 
 ## Official files
 

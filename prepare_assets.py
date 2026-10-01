@@ -94,7 +94,7 @@ DECKS = {
         1: 14,
     },
 }
-DEFAULT_DECK = "dragapult"
+DEFAULT_DECK = "abomasnow"
 DECK = DECKS[os.environ.get("PTCG_DECK", DEFAULT_DECK)]
 
 
