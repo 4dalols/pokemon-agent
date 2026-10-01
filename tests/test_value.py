@@ -3,7 +3,10 @@ import json
 import math
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
+from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -15,17 +18,22 @@ from value import FEATURE_NAMES, SIDE_FEATURES, Featurizer, ValueModel, Weights,
 
 
 def midgame() -> Current:
-    observation: Observation = battle_start(POLICY.deck, POLICY.deck)[0]
-    try:
-        while True:
-            selection, current = observation["select"], observation["current"]
-            assert selection is not None and current is not None
-            if current["result"] >= 0 or current["turn"] >= 4:
-                return copy.deepcopy(current)
-            observation = battle_select(POLICY.choose(observation))
-    finally:
-        battle_finish()
-        Battle.battle_ptr = None
+    """A live (non-terminal) state from turn 4 or later; replays games that end early."""
+    for _ in range(20):
+        observation: Observation = battle_start(POLICY.deck, POLICY.deck)[0]
+        try:
+            while True:
+                selection, current = observation["select"], observation["current"]
+                assert selection is not None and current is not None
+                if current["result"] >= 0:
+                    break
+                if current["turn"] >= 4:
+                    return copy.deepcopy(current)
+                observation = battle_select(POLICY.choose(observation))
+        finally:
+            battle_finish()
+            Battle.battle_ptr = None
+    raise AssertionError("no game reached turn 4 alive")
 
 
 def constant_weights(logit: float) -> Weights:
@@ -119,3 +127,48 @@ def test_baseline_worktree_loads_the_unmodified_main_agent(tmp_path: Path) -> No
         assert sys.modules["search"].__file__ == str(ROOT / "search.py")
     finally:
         subprocess.run(["git", "worktree", "remove", "--force", str(path)], cwd=ROOT, check=True)
+
+
+def test_opponent_panel_lists_are_legal_and_weighted(tmp_path: Path) -> None:
+    from assets import ROOT, load_panel
+
+    panel = load_panel(ROOT / "opponent_panel.json", CARDS)
+    assert len(panel) >= 10
+    for deck, weight in panel.values():
+        assert len(deck) == 60 and weight > 0
+    broken = tmp_path / "panel.json"
+    broken.write_text(json.dumps({"x": {"entries": 1, "cards": {"999999 Nothing": 60}}}))
+    with pytest.raises(ValueError, match="unknown card"):
+        load_panel(broken, CARDS)
+
+
+def test_training_jobs_mix_mirror_and_panel_games_on_both_seats() -> None:
+    from train_value import MIRROR, Job, generate
+
+    panel = {"a": ([1] * 60, 3), "b": ([2] * 60, 1)}
+    with patch("train_value.ProcessPoolExecutor") as executor:
+        executor.return_value.__enter__.return_value.map = lambda _, jobs, chunksize: list(jobs)
+        jobs = cast(list[Job], generate(400, 1, 3, panel, 0.25))
+    assert len(jobs) == 400
+    assert {job["our_seat"] for job in jobs} == {0, 1}
+    mirrors = [job for job in jobs if job["opponent"] == MIRROR]
+    assert 60 <= len(mirrors) <= 140 and all(job["opponent_deck"] is None for job in mirrors)
+    others = [job for job in jobs if job["opponent"] != MIRROR]
+    assert {job["opponent"] for job in others} == {"a", "b"}
+    assert all(job["opponent_deck"] == panel[job["opponent"]][0] for job in others)
+    counts = Counter(job["opponent"] for job in others)
+    assert counts["a"] > counts["b"]
+
+
+def test_vectorised_prediction_matches_the_runtime_model() -> None:
+    import numpy as np
+
+    from train_value import predict
+
+    weights = json.loads((Path(__file__).resolve().parents[1] / "value.json").read_text())
+    current = midgame()
+    features = [Featurizer(CARDS, ATTACKS).featurize(current, me) for me in (0, 1)]
+    batch = predict(weights, np.array(features))
+    model = ValueModel(weights)
+    for row, probability in zip(features, batch, strict=True):
+        assert probability == pytest.approx(model.predict(row), abs=1e-9)

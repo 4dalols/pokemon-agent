@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from assets import ROOT, load_catalog, load_deck, locate
 from memory import Tracker
@@ -9,10 +10,11 @@ from value import load_model
 
 CARDS, ATTACKS = load_catalog(ROOT)
 POLICY = Policy(load_deck(ROOT, CARDS), CARDS, ATTACKS)
+VALUE_SETTING = os.environ.get("PTCG_VALUE_MODEL", "1")
 MODEL = (
     None
-    if os.environ.get("PTCG_VALUE_MODEL", "1") == "0"
-    else load_model(locate(ROOT, "value.json"))
+    if VALUE_SETTING == "0"
+    else load_model(Path(VALUE_SETTING) if VALUE_SETTING != "1" else locate(ROOT, "value.json"))
 )
 SEARCHER = Searcher(
     POLICY,

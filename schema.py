@@ -128,6 +128,11 @@ class AttackData(TypedDict):
     energies: list[int]
 
 
+class PanelEntry(TypedDict):
+    entries: int
+    cards: dict[str, int]
+
+
 class Catalog(TypedDict):
     source: str
     cards: list[CardData]

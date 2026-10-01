@@ -96,14 +96,25 @@ weights live in `value.json` (about 2k parameters) and are loaded at import time
 `main.py`. When present, the model's win probability replaces the hand-written
 prize/board score at rollout leaves (`PTCG_VALUE_MODEL=0` restores the heuristic
 score). `train_value.py` regenerates the weights reproducibly: it plays seeded
-self-play games on the native engine (heuristic, short-budget search and the benchmark
-opponents, both seats), labels every MAIN-selection state of both players with the
-final result, and fits the network with numpy, holding out 20% of the games to report
-log-loss and accuracy next to the prior and the heuristic score:
+games on the native engine with our `deck.csv` in one seat and, in the other, either
+the same deck (`--mirror-share`, default 25%) or a list drawn from the opponent panel
+`opponent_panel.json` (`--opponent-decks`; ladder archetypes weighted by their replay
+`entries`), both seats piloted by the heuristic policy, short-budget search and the
+benchmark opponents. Every MAIN-selection state of both players is labelled with the
+final result and the network is fitted with numpy, holding out 20% of the games to
+report log-loss and accuracy overall and per opponent archetype, next to the prior,
+the heuristic score and an earlier weight file (`--compare`, default the existing
+output; `--report` writes the table as JSON). The features are deck-agnostic (HP,
+damage, energy counts, affordable attack damage after weakness/resistance, stages,
+prize values, zone sizes, special conditions) so the same model serves any deck:
 
 ```sh
-.venv/bin/python train_value.py --games 8000 --workers 8 --dataset results/dataset.json
+.venv/bin/python train_value.py --games 8000 --workers 8 --dataset results/dataset.json \
+  --report results/value_report.json
 ```
+
+`PTCG_VALUE_MODEL=<path>` makes the agent load a different weight file (e.g. to
+benchmark an older model); `PTCG_VALUE_MODEL=0` disables the model.
 
 The engine is taken from `kaggle_environments.envs.cabt.cg.sim` (present in the
 Kaggle runtime), falling back to a `cg` package on `sys.path`; without either the
@@ -149,7 +160,12 @@ includes the largest per-game overage spend. The default opponents use the same 
   check, not a measure of strength against a different agent.
 - `main`: the unmodified agent from the `main` branch with its full search budget,
   imported from a git worktree (`baseline.py`, default `results/main-worktree`,
-  created on demand). Use `--search --opponents main` to compare a change head-to-head.
+  created on demand from `--main-ref`). Use `--search --opponents main` to compare a
+  change head-to-head; `--agent main` puts that agent in the measured seat instead.
+
+`--opponent-deck <name>` hands the `first`/`greedy`/`random`/`self` opponent another
+60-card list — an `archetypes.LIBRARY` name or a deck from the `--opponent-decks` panel
+(default `opponent_panel.json`) — piloted by the plain policy built for that deck.
 
 Parallel games run in separate processes because the native battle is process-global.
 The native API exposes no seed parameter. Python seeds control only the random

@@ -2,15 +2,20 @@
 
 Games are played in worker processes with the heuristic policy, short-budget rollout
 search and the benchmark opponents; every MAIN selection is featurized from both
-players' points of view and labelled with the final result. A small MLP is fitted
-with numpy (Adam, early stopping on games held out by game id) and written as
-`value.json` for the pure-Python `value.ValueModel`.
+players' points of view and labelled with the final result. Our deck (`deck.csv`) sits
+in one seat; the other seat plays either the same deck (mirror) or a list sampled from
+an opponent panel (`--opponent-decks`, weighted by ladder `entries`), piloted by the
+same policy mix. A small MLP is fitted with numpy (Adam, early stopping on games held
+out by game id) and written as `value.json` for the pure-Python `value.ValueModel`;
+holdout metrics are reported overall, per opponent archetype and against a previous
+model (`--compare`) on the same holdout.
 """
 
 import argparse
 import json
 import random
 import time
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import TypedDict, cast
@@ -18,9 +23,11 @@ from typing import TypedDict, cast
 import numpy as np
 from numpy.typing import NDArray
 
+from assets import ROOT, load_panel
 from benchmark import opponent_action
 from engine import Battle, battle_finish, battle_select, battle_start
 from main import ATTACKS, CARDS, POLICY
+from policy import Policy
 from schema import Observation
 from search import Searcher, load_engine
 from value import FEATURE_NAMES, Featurizer, Weights
@@ -28,24 +35,41 @@ from value import FEATURE_NAMES, Featurizer, Weights
 Array = NDArray[np.float64]
 KINDS = ("policy", "policy", "policy", "policy", "search", "search", "greedy", "random", "first")
 SEARCH_BUDGET = 0.05
+MIRROR = "mirror"
 
 
 class GameData(TypedDict):
+    opponent: str
     features: list[list[float]]
     heuristic: list[float]
     labels: list[float]
 
 
-def play(job: tuple[int, str, str]) -> GameData:
-    seed, left, right = job
+class Job(TypedDict):
+    seed: int
+    kinds: tuple[str, str]
+    our_seat: int
+    opponent: str
+    opponent_deck: list[int] | None
+
+
+def play(job: Job) -> GameData:
+    seed = job["seed"]
     rng = random.Random(seed)
     featurizer = Featurizer(CARDS, ATTACKS)
-    searcher = Searcher(POLICY, load_engine(), budget=SEARCH_BUDGET, candidates=4, seed=seed)
+    engine = load_engine()
+    policies = [POLICY, POLICY]
+    if job["opponent_deck"] is not None:
+        policies[1 - job["our_seat"]] = Policy(job["opponent_deck"], CARDS, ATTACKS)
+    searchers = [
+        Searcher(policy, engine, budget=SEARCH_BUDGET, candidates=4, seed=seed + side)
+        for side, policy in enumerate(policies)
+    ]
     reference = Searcher(POLICY, None)
-    kinds = (left, right)
-    data: GameData = {"features": [], "heuristic": [], "labels": []}
+    kinds = job["kinds"]
+    data: GameData = {"opponent": job["opponent"], "features": [], "heuristic": [], "labels": []}
     sides: list[int] = []
-    observation, start = battle_start(POLICY.deck, POLICY.deck)
+    observation, start = battle_start(policies[0].deck, policies[1].deck)
     if start.errorPlayer >= 0:
         raise ValueError(f"Native deck error: {start.errorPlayer}/{start.errorType}")
     try:
@@ -65,13 +89,14 @@ def play(job: tuple[int, str, str]) -> GameData:
                     data["features"].append(featurizer.featurize(current, me))
                     data["heuristic"].append(reference.evaluate(obs, me))
                     sides.append(me)
-            kind = kinds[current["yourIndex"]]
+            mover = current["yourIndex"]
+            kind = kinds[mover]
             if kind == "policy":
-                action = POLICY.choose(obs)
+                action = policies[mover].choose(obs)
             elif kind == "search":
-                action = searcher.choose(obs)
+                action = searchers[mover].choose(obs)
             else:
-                action = opponent_action(obs, kind, rng)
+                action = opponent_action(obs, kind, rng, policies[mover])
             observation = battle_select(action)
         raise RuntimeError("Game exceeded 10,000 selections")
     finally:
@@ -79,13 +104,33 @@ def play(job: tuple[int, str, str]) -> GameData:
         Battle.battle_ptr = None
 
 
-def generate(games: int, workers: int, seed: int) -> list[GameData]:
+def generate(
+    games: int,
+    workers: int,
+    seed: int,
+    panel: dict[str, tuple[list[int], int]],
+    mirror_share: float,
+) -> list[GameData]:
     rng = random.Random(seed)
-    jobs = []
+    names = list(panel)
+    weights = [float(panel[name][1]) for name in names]
+    jobs: list[Job] = []
     for index in range(games):
         kind = KINDS[index % len(KINDS)]
-        pair = ("policy", kind) if index % 2 else (kind, "policy")
-        jobs.append((seed * 1_000_003 + index, *pair))
+        our_seat = index % 2
+        pair = (kind, "policy") if our_seat else ("policy", kind)
+        opponent = MIRROR
+        if names and rng.random() >= mirror_share:
+            opponent = rng.choices(names, weights)[0]
+        jobs.append(
+            {
+                "seed": seed * 1_000_003 + index,
+                "kinds": pair,
+                "our_seat": our_seat,
+                "opponent": opponent,
+                "opponent_deck": None if opponent == MIRROR else panel[opponent][0],
+            }
+        )
     rng.shuffle(jobs)
     with ProcessPoolExecutor(max_workers=workers) as executor:
         return list(executor.map(play, jobs, chunksize=8))
@@ -106,6 +151,51 @@ def log_loss(probabilities: Array, labels: Array) -> float:
 def accuracy(probabilities: Array, labels: Array) -> float:
     decided = labels != 0.5
     return float(np.mean((probabilities[decided] > 0.5) == (labels[decided] > 0.5)))
+
+
+def predict(weights: Weights, features: Array) -> Array:
+    """Vectorised `value.ValueModel.predict` for a saved weight file."""
+    activations = (features - np.array(weights["mean"])) / np.array(weights["scale"])
+    last = len(weights["layers"]) - 1
+    for depth, (matrix, bias) in enumerate(zip(weights["layers"], weights["biases"], strict=True)):
+        activations = activations @ np.array(matrix).T + np.array(bias)
+        if depth < last:
+            activations = np.maximum(activations, 0)
+    logits = activations[:, 0]
+    return np.asarray(1 / (1 + np.exp(-np.clip(logits, -30, 30))))
+
+
+def evaluate(
+    games: list[GameData], models: dict[str, Weights]
+) -> dict[str, dict[str, dict[str, float | int]]]:
+    """Holdout log-loss/accuracy per model, overall and per opponent archetype."""
+    groups = {"all": games}
+    for game in games:
+        groups.setdefault(game["opponent"], []).append(game)
+    report: dict[str, dict[str, dict[str, float | int]]] = {}
+    for group, members in groups.items():
+        features, _, labels = stack(members)
+        report[group] = {"games": {"count": len(members), "positions": int(len(labels))}}
+        for name, weights in models.items():
+            probabilities = predict(weights, features)
+            report[group][name] = {
+                "log_loss": log_loss(probabilities, labels),
+                "accuracy": accuracy(probabilities, labels),
+            }
+    return report
+
+
+def table(report: dict[str, dict[str, dict[str, float | int]]], models: list[str]) -> str:
+    header = "| opponent | games | positions | " + " | ".join(
+        f"{name} log-loss | {name} acc" for name in models
+    )
+    lines = [header + " |", "|" + "---|" * (3 + 2 * len(models))]
+    for group, metrics in report.items():
+        cells = [group, str(metrics["games"]["count"]), str(metrics["games"]["positions"])]
+        for name in models:
+            cells += [f"{metrics[name]['log_loss']:.4f}", f"{metrics[name]['accuracy']:.3f}"]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
 
 
 class Network:
@@ -216,12 +306,33 @@ def main() -> None:
     parser.add_argument("--holdout", type=float, default=0.2)
     parser.add_argument("--output", type=Path, default=Path("value.json"))
     parser.add_argument("--dataset", type=Path, help="Cache generated games as JSON")
+    parser.add_argument(
+        "--opponent-decks",
+        type=Path,
+        default=ROOT / "opponent_panel.json",
+        help="Panel JSON of opponent lists sampled by their `entries` weight",
+    )
+    parser.add_argument(
+        "--mirror-share",
+        type=float,
+        default=0.25,
+        help="Fraction of games where the opponent plays our own deck",
+    )
+    parser.add_argument(
+        "--compare",
+        type=Path,
+        help="Earlier weight file scored on the same holdout (default: the existing --output)",
+    )
+    parser.add_argument("--report", type=Path, help="Write the holdout table as JSON")
     args = parser.parse_args()
     started = time.perf_counter()
+    compare = args.compare if args.compare is not None else args.output
+    previous = cast(Weights, json.loads(compare.read_text())) if compare.exists() else None
     if args.dataset and args.dataset.exists():
         games = cast(list[GameData], json.loads(args.dataset.read_text()))
     else:
-        games = generate(args.games, args.workers, args.seed)
+        panel = load_panel(args.opponent_decks, CARDS) if args.opponent_decks.exists() else {}
+        games = generate(args.games, args.workers, args.seed, panel, args.mirror_share)
         if args.dataset:
             args.dataset.parent.mkdir(parents=True, exist_ok=True)
             args.dataset.write_text(json.dumps(games))
@@ -242,6 +353,7 @@ def main() -> None:
     prior = np.full(len(held_y), train_y.mean())
     metrics["prior_log_loss"] = log_loss(prior, held_y)
     metrics["heuristic_accuracy"] = accuracy(1 / (1 + np.exp(-held_h / 300)), held_y)
+    opponents = Counter(game["opponent"] for game in games)
     metadata: dict[str, float | int | str] = {
         **metrics,
         "games": len(games),
@@ -249,9 +361,25 @@ def main() -> None:
         "hidden": args.hidden,
         "seed": args.seed,
         "generation_seconds": round(generation, 1),
+        "mirror_games": opponents[MIRROR],
+        "opponent_decks": len(opponents) - (MIRROR in opponents),
     }
-    args.output.write_text(json.dumps(export(network, mean, scale, metadata)))
+    weights = export(network, mean, scale, metadata)
+    models = {"new": weights}
+    if previous is not None:
+        models["old"] = previous
+        held = evaluate(games[split:], models)
+        metadata["compare"] = str(compare)
+        metadata["compare_log_loss"] = held["all"]["old"]["log_loss"]
+        metadata["compare_accuracy"] = held["all"]["old"]["accuracy"]
+    else:
+        held = evaluate(games[split:], models)
+    args.output.write_text(json.dumps(weights))
+    if args.report:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps({"metadata": metadata, "holdout": held}, indent=2))
     print(json.dumps(metadata, indent=2))
+    print(table(held, list(models)))
 
 
 if __name__ == "__main__":

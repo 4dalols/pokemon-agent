@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import cast
 
 from archetypes import LIBRARY
+from assets import ROOT, load_panel
 from baseline import DEFAULT_WORKTREE, Chooser, ensure_worktree, load_baseline
 from engine import SOURCE, Battle, battle_finish, battle_select, battle_start
-from main import ATTACKS, POLICY, SEARCHER
+from main import ATTACKS, CARDS, POLICY, SEARCHER
+from policy import Policy
 from schema import Observation
 
 OVERAGE = 600.0
@@ -34,10 +36,14 @@ class GameResult:
     contexts: list[int]
 
 
-def opponent_action(observation: Observation, kind: str, rng: random.Random) -> list[int]:
+def opponent_action(
+    observation: Observation, kind: str, rng: random.Random, policy: Policy = POLICY
+) -> list[int]:
     selection = observation["select"]
     if selection is None:
-        return POLICY.deck.copy()
+        return policy.deck.copy()
+    if kind == "self":
+        return policy.choose(observation)
     options = selection["option"]
     if kind == "random":
         return rng.sample(range(len(options)), selection["maxCount"])
@@ -77,8 +83,10 @@ def play_game(
     chooser: Chooser = SEARCHER if agent == "candidate" else baseline(worktree)
     started = time.perf_counter()
     decks = [POLICY.deck, POLICY.deck]
+    pilot = POLICY
     if opponent_deck is not None:
         decks[1 - seat] = opponent_deck
+        pilot = Policy(opponent_deck, CARDS, ATTACKS)
     observation, start = battle_start(decks[0], decks[1])
     if start.errorPlayer >= 0:
         raise ValueError(f"Native deck error: {start.errorPlayer}/{start.errorType}")
@@ -114,13 +122,12 @@ def play_game(
             decision_started = time.perf_counter()
             if mover == seat and search:
                 action = chooser.choose(obs, obs["remainingOverageTime"])
-            elif mover == seat or opponent == "self":
+            elif mover == seat:
                 action = POLICY.choose(obs)
-                maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
             elif opponent == "main":
                 action = baseline(worktree).choose(obs, obs["remainingOverageTime"])
             else:
-                action = opponent_action(obs, opponent, rng)
+                action = opponent_action(obs, opponent, rng, pilot)
             duration = time.perf_counter() - decision_started
             used[mover] += duration
             if mover == seat:
@@ -200,8 +207,17 @@ def main() -> None:
     parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
     parser.add_argument(
         "--opponent-deck",
-        choices=[entry.name for entry in LIBRARY],
-        help="Archetype list the first/greedy/random opponent plays instead of our deck",
+        help="Archetype (archetypes.LIBRARY name or --opponent-decks panel name) the "
+        "first/greedy/random/self opponent plays instead of our deck",
+    )
+    parser.add_argument(
+        "--opponent-decks",
+        type=Path,
+        default=ROOT / "opponent_panel.json",
+        help="Panel JSON whose deck names --opponent-deck may also use",
+    )
+    parser.add_argument(
+        "--main-ref", default="main", help="Git ref checked out into a missing --main-worktree"
     )
     parser.add_argument(
         "--agent",
@@ -215,12 +231,18 @@ def main() -> None:
     if args.games < 1 or args.workers < 1:
         parser.error("games and workers must be positive")
     if "main" in args.opponents or args.agent == "main":
-        ensure_worktree(args.main_worktree)
+        ensure_worktree(args.main_worktree, args.main_ref)
     jobs = [(name, i % 2, i) for name in args.opponents for i in range(args.games)]
     opponent_deck = None
     if args.opponent_deck is not None:
-        entry = next(e for e in LIBRARY if e.name == args.opponent_deck)
-        opponent_deck = sorted(entry.cards.elements())
+        library = {entry.name: sorted(entry.cards.elements()) for entry in LIBRARY}
+        if args.opponent_decks.exists():
+            library.update(
+                (name, deck) for name, (deck, _) in load_panel(args.opponent_decks, CARDS).items()
+            )
+        if args.opponent_deck not in library:
+            parser.error(f"unknown opponent deck {args.opponent_deck!r}")
+        opponent_deck = library[args.opponent_deck]
     play = partial(
         play_game,
         search=args.search,

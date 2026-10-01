@@ -3,7 +3,7 @@ from collections import Counter
 from pathlib import Path
 from typing import cast
 
-from schema import AttackData, CardData, Catalog
+from schema import AttackData, CardData, Catalog, PanelEntry
 
 ROOT = Path(__file__).resolve().parent
 KAGGLE_AGENT_DIR = Path("/kaggle_simulations/agent")
@@ -49,3 +49,19 @@ def validate_deck(deck: list[int], cards: dict[int, CardData]) -> None:
         raise ValueError("The deck may contain only one ACE SPEC")
     if any(count > 4 for count in names.values()):
         raise ValueError("More than four copies of a card name")
+
+
+def load_panel(path: Path, cards: dict[int, CardData]) -> dict[str, tuple[list[int], int]]:
+    """Opponent deck panel: `{name: {"entries": weight, "cards": {"<id> <name>": count}}}`."""
+    panel = cast(dict[str, PanelEntry], json.loads(path.read_text(encoding="utf-8")))
+    decks: dict[str, tuple[list[int], int]] = {}
+    for name, entry in panel.items():
+        deck: list[int] = []
+        for key, count in entry["cards"].items():
+            card_id = int(key.split(" ", 1)[0])
+            if card_id not in cards:
+                raise ValueError(f"{name}: unknown card {key}")
+            deck.extend([card_id] * count)
+        validate_deck(sorted(deck), cards)
+        decks[name] = (sorted(deck), entry["entries"])
+    return decks
