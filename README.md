@@ -38,7 +38,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python prepare_assets.py
 .venv/bin/ruff check .
-.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py prepare_assets.py benchmark.py package.py tests
+.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py prepare_assets.py benchmark.py package.py decks.py reference.py tests
 .venv/bin/pytest -q
 .venv/bin/python benchmark.py --games 100 --workers 4 --output results/benchmark.json
 .venv/bin/python package.py
@@ -51,18 +51,25 @@ warning about missing `pyspiel` belongs to another environment and does not prev
 cabt battles.
 
 `prepare_assets.py` exports metadata from the resolved native engine and writes the
-deck. It overwrites `cards.json` and `deck.csv`; keep
-modified deck lists elsewhere before rerunning it. The generated files are excluded
+deck. Candidate deck lists live in `decks.py`; `--deck <name>` selects one and
+`DEFAULT_DECK` is what the submission plays. It overwrites `cards.json` and `deck.csv`. The generated files are excluded
 from Git by default. The runtime agent itself uses only Python's standard library.
 
 ## Strategy
 
-- Lead with Snover when available, develop its evolution, and fund the active attacker.
-- Use Mega Abomasnow ex's Hammer-lanche with an estimated remaining Water Energy
-  density and knockout probability; prefer Frost Barrier when it scores better.
-- Use Kyogre's Riptide after Water Energy accumulates in the discard pile.
-- Preserve evolution/search pieces when paying discard costs, draw out of small hands,
-  attach Powerglass, and switch to a better prepared attacker when legal.
+The heuristic reads the deck list and card metadata, so it plays any legal deck:
+
+- Lead with the Basic whose evolution line (within the deck) has the best attacks,
+  develop evolutions, and fund the attacker whose line is closest to attacking with the
+  deck's main Energy type.
+- Score attacks by damage after Weakness, knockout probability and text effects
+  (self-damage, Energy discards, prize-count scaling such as Supreme Overlord,
+  deck-density attacks such as Hammer-lanche); prefer a guaranteed final prize.
+- Score Trainers from their text: search Items by what they can fetch, draw Supporters
+  by hand size and whether the hand still holds anything playable, Tools by the
+  attacker they would complete, gust/switch cards by the knockout they enable.
+- Preserve evolution/search pieces when paying discard costs and switch to a better
+  prepared attacker when legal.
 - Interpret follow-up choices as option **positions**, including iterative energy
   payments, optional searches, facedown prizes, and replacement active Pokémon.
 
@@ -104,6 +111,13 @@ being hidden as losses. Seats alternate. The default opponents use the same deck
   highest printed base damage. It avoids voluntary retreat and Abilities.
 - `self`: the same baseline on both sides; its assigned-seat win rate is a symmetry
   check, not a measure of strength against a different agent.
+- `main`: the unmodified `main` branch agent (deck, policy and search), run from a git
+  worktree at `results/main-ref` (created on demand) in its own interpreter by
+  `reference.py`; `--opponent-search` gives it its full search budget.
+- `deck:<name>`: the current code playing another candidate from `decks.py`.
+
+`--deck <name>` makes the benchmarked agent play a candidate deck instead of the one in
+`deck.csv`, so candidates can be round-robined against each other and against `main`.
 
 Parallel games run in separate processes because the native battle is process-global.
 The native API exposes no seed parameter. Python seeds control only the random

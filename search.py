@@ -2,9 +2,10 @@
 
 For a MAIN selection, hidden cards (own deck order and prizes, the opponent's deck,
 prizes and hand) are sampled; each candidate option is then played through the native
-simulator with the heuristic policy acting for both sides until the opponent's next
-turn ends. Candidates are ranked by the averaged outcome; the heuristic ranking is the
-fallback whenever no native engine is importable or the time budget is spent.
+simulator until the opponent's next turn ends, the heuristic policy acting for our side
+and a heuristic built for the opponent's observed deck acting for theirs. Candidates are
+ranked by the averaged outcome; the heuristic ranking is the fallback whenever no native
+engine is importable or the time budget is spent.
 """
 
 import ctypes
@@ -77,6 +78,7 @@ class Searcher:
         self.budget = budget
         self.candidates = candidates
         self.rng = random.Random(seed)
+        self.rival = policy
         self.agent = engine.AgentStart() if engine is not None else None
         self.calls = 0
         self.samples = 0
@@ -147,6 +149,7 @@ class Searcher:
         my_prize = own_unseen[:hidden_prizes]
         my_deck = own_unseen[hidden_prizes:]
         enemy = self.enemy_pool(theirs)
+        self.rival = self.rival_policy(self.seen(theirs) + enemy)
         self.rng.shuffle(enemy)
         enemy_prizes = sum(card is None for card in theirs["prize"])
         enemy_hand = theirs["handCount"]
@@ -180,7 +183,8 @@ class Searcher:
                 break
             if current["yourIndex"] == me and current["turn"] >= start_turn + 2:
                 break
-            state = self.step(state["searchId"], self.policy.choose(observation))
+            actor = self.policy if current["yourIndex"] == me else self.rival
+            state = self.step(state["searchId"], actor.choose(observation))
             if state is None:
                 return -TERMINAL
             observation = state["observation"]
@@ -204,8 +208,8 @@ class Searcher:
         mine, theirs = current["players"][me], current["players"][1 - me]
         return (
             300.0 * (len(theirs["prize"]) - len(mine["prize"]))
-            + self.board(theirs) * -1
             + self.board(mine)
+            - self.board(theirs)
         )
 
     @staticmethod
@@ -217,6 +221,12 @@ class Searcher:
             score += 40 + 25 * len(card.get("energies", []))
             score -= 0.6 * (card.get("maxHp", 0) - card.get("hp", 0))
         return score
+
+    def rival_policy(self, deck: list[int]) -> Policy:
+        """Heuristic for the opponent's deck (seen cards plus the sampled hidden ones)."""
+        if sorted(deck) == sorted(self.rival.deck):
+            return self.rival
+        return Policy(deck, self.policy.cards, self.policy.attacks)
 
     def enemy_pool(self, theirs: Player) -> list[int]:
         seen = Counter(self.seen(theirs))

@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import json
 import random
 import time
@@ -9,9 +10,20 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
+from assets import ROOT
+from decks import DECKS, deck_list
 from engine import SOURCE, Battle, battle_finish, battle_select, battle_start
-from main import ATTACKS, POLICY, SEARCHER
+from main import ATTACKS, CARDS, POLICY, SEARCHER
+from policy import Policy
+from reference import ReferenceAgent, ensure_reference
 from schema import Observation
+from search import Searcher, load_engine
+
+MAIN_REF = ROOT / "results" / "main-ref"
+SIMPLE_OPPONENTS = ("first", "random", "greedy", "self", "main")
+
+AGENTS: dict[str, tuple[Policy, Searcher]] = {}
+REFERENCES: dict[tuple[Path, bool], ReferenceAgent] = {}
 
 
 @dataclass
@@ -22,8 +34,26 @@ class GameResult:
     steps: int
     turns: int
     max_decision_ms: float
+    opponent_max_decision_ms: float
     seconds: float
     contexts: list[int]
+
+
+def agent_for(deck: str | None) -> tuple[Policy, Searcher]:
+    """Policy and searcher for a named candidate deck (``None`` means the shipped deck.csv)."""
+    if deck is None:
+        return POLICY, SEARCHER
+    if deck not in AGENTS:
+        policy = Policy(deck_list(deck), CARDS, ATTACKS)
+        AGENTS[deck] = policy, Searcher(policy, load_engine(), SEARCHER.budget, SEARCHER.candidates)
+    return AGENTS[deck]
+
+
+def reference_for(root: Path, search: bool) -> ReferenceAgent:
+    if (root, search) not in REFERENCES:
+        REFERENCES[root, search] = ReferenceAgent(root, search=search)
+        atexit.register(REFERENCES[root, search].close)
+    return REFERENCES[root, search]
 
 
 def opponent_action(observation: Observation, kind: str, rng: random.Random) -> list[int]:
@@ -49,17 +79,47 @@ def opponent_action(observation: Observation, kind: str, rng: random.Random) -> 
     return list(range(selection["maxCount"]))
 
 
+def validate_opponent(name: str) -> str:
+    if name in SIMPLE_OPPONENTS:
+        return name
+    if name.startswith("deck:") and name[5:] in DECKS:
+        return name
+    raise argparse.ArgumentTypeError(
+        f"Unknown opponent {name!r}; use {', '.join(SIMPLE_OPPONENTS)} or deck:<name>"
+    )
+
+
 def play_game(
-    job: tuple[str, int, int], trace_path: Path | None = None, search: bool = False
+    job: tuple[str, int, int],
+    trace_path: Path | None = None,
+    search: bool = False,
+    deck: str | None = None,
+    opponent_search: bool = False,
+    main_ref: Path = MAIN_REF,
 ) -> GameResult:
     opponent, seat, seed = job
     rng = random.Random(seed)
     started = time.perf_counter()
-    observation, start = battle_start(POLICY.deck, POLICY.deck)
+    policy, searcher = agent_for(deck)
+    reference = reference_for(main_ref, opponent_search) if opponent == "main" else None
+    rival: tuple[Policy, Searcher] | None = None
+    if opponent.startswith("deck:"):
+        rival = agent_for(opponent[5:])
+    elif opponent == "self":
+        rival = policy, searcher
+    if reference is not None:
+        opponent_deck = reference.deck()
+    elif rival is not None:
+        opponent_deck = rival[0].deck
+    else:
+        opponent_deck = policy.deck
+    decks = (policy.deck, opponent_deck) if seat == 0 else (opponent_deck, policy.deck)
+    observation, start = battle_start(*decks)
     if start.errorPlayer >= 0:
         raise ValueError(f"Native deck error: {start.errorPlayer}/{start.errorType}")
     contexts: set[int] = set()
     maximum = 0.0
+    opponent_maximum = 0.0
     trace: list[dict[str, object]] = []
     try:
         for step in range(10000):
@@ -75,6 +135,7 @@ def play_game(
                     step,
                     current["turn"],
                     maximum,
+                    opponent_maximum,
                     time.perf_counter() - started,
                     sorted(contexts),
                 )
@@ -82,14 +143,18 @@ def play_game(
                 raise ValueError("Missing live selection")
             contexts.add(selection["context"])
             decision_started = time.perf_counter()
-            if current["yourIndex"] == seat and search:
-                action = SEARCHER.choose(obs)
+            if current["yourIndex"] == seat:
+                action = searcher.choose(obs) if search else policy.choose(obs)
                 maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
-            elif current["yourIndex"] == seat or opponent == "self":
-                action = POLICY.choose(obs)
-                maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
+            elif reference is not None:
+                action = reference.choose(obs)
+            elif rival is not None:
+                action = rival[1].choose(obs) if opponent_search else rival[0].choose(obs)
             else:
                 action = opponent_action(obs, opponent, rng)
+            if current["yourIndex"] != seat:
+                elapsed = (time.perf_counter() - decision_started) * 1000
+                opponent_maximum = max(opponent_maximum, elapsed)
             if trace_path:
                 trace.append({"observation": obs, "action": action})
             if not selection["minCount"] <= len(action) <= selection["maxCount"]:
@@ -111,7 +176,7 @@ def play_game(
             trace_path.write_text(json.dumps(trace, indent=2))
 
 
-def summary(results: list[GameResult]) -> dict[str, object]:
+def summary(results: list[GameResult], wall_seconds: float | None = None) -> dict[str, object]:
     groups: dict[str, object] = {}
     for name in sorted({result.opponent for result in results}):
         group = [result for result in results if result.opponent == name]
@@ -123,7 +188,7 @@ def summary(results: list[GameResult]) -> dict[str, object]:
         denominator = 1 + z * z / n
         center = (proportion + z * z / (2 * n)) / denominator
         margin = z * (proportion * (1 - proportion) / n + z * z / (4 * n * n)) ** 0.5 / denominator
-        groups[name] = {
+        entry: dict[str, object] = {
             "games": n,
             "wins": wins,
             "draws": draws,
@@ -131,9 +196,14 @@ def summary(results: list[GameResult]) -> dict[str, object]:
             "win_rate": proportion,
             "wilson_95": [center - margin, center + margin],
             "max_decision_ms": max(result.max_decision_ms for result in group),
+            "opponent_max_decision_ms": max(result.opponent_max_decision_ms for result in group),
+            "mean_game_seconds": sum(result.seconds for result in group) / n,
             "mean_turns": sum(result.turns for result in group) / n,
             "seats": dict(Counter(result.baseline_seat for result in group)),
         }
+        if wall_seconds:
+            entry["games_per_second"] = len(results) / wall_seconds
+        groups[name] = entry
     return groups
 
 
@@ -144,25 +214,46 @@ def main() -> None:
     parser.add_argument(
         "--opponents",
         nargs="+",
-        choices=["first", "random", "greedy", "self"],
+        type=validate_opponent,
         default=["first", "random", "greedy", "self"],
+        help="first, random, greedy, self, main (unmodified main checkout) or deck:<name>",
     )
+    parser.add_argument("--deck", choices=sorted(DECKS), help="Candidate deck (default deck.csv)")
     parser.add_argument("--output", type=Path, default=Path("results/benchmark.json"))
     parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
+    parser.add_argument(
+        "--opponent-search", action="store_true", help="self/deck opponents use rollout search"
+    )
+    parser.add_argument("--main-ref", type=Path, default=MAIN_REF, help="Checkout of main")
     args = parser.parse_args()
     if args.games < 1 or args.workers < 1:
         parser.error("games and workers must be positive")
+    if "main" in args.opponents:
+        ensure_reference(args.main_ref)
     jobs = [(name, i % 2, i) for name in args.opponents for i in range(args.games)]
+    play = partial(
+        play_game,
+        search=args.search,
+        deck=args.deck,
+        opponent_search=args.opponent_search,
+        main_ref=args.main_ref,
+    )
+    started = time.perf_counter()
     if args.workers == 1:
-        results = [play_game(job, search=args.search) for job in jobs]
+        results = [play(job) for job in jobs]
     else:
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            results = list(executor.map(partial(play_game, search=args.search), jobs))
+            results = list(executor.map(play, jobs))
+    wall = time.perf_counter() - started
     report = {
         "engine": SOURCE,
+        "deck": args.deck or "deck.csv",
         "search": args.search,
+        "opponent_search": args.opponent_search,
+        "wall_seconds": wall,
+        "games_per_second": len(results) / wall,
         "native_rng": "No native seed exposed; Python seed controls only random opponent",
-        "summary": summary(results),
+        "summary": summary(results, wall),
         "games": [asdict(result) for result in results],
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

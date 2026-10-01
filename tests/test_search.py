@@ -109,3 +109,14 @@ def test_terminal_outcomes_dominate_board_evaluation() -> None:
     assert searcher.evaluate(won, me) == TERMINAL
     assert searcher.evaluate(lost, me) == -TERMINAL
     assert abs(searcher.evaluate(observation, me)) < TERMINAL
+
+
+def test_rollouts_model_the_opponent_with_a_policy_for_their_deck() -> None:
+    searcher = Searcher(POLICY, None)
+    assert searcher.rival_policy(list(POLICY.deck)) is POLICY
+    metal = next(i for i, card in POLICY.cards.items() if card["name"] == "Basic {M} Energy")
+    zacian = next(i for i, card in POLICY.cards.items() if card["name"] == "Zacian ex")
+    rival = searcher.rival_policy([zacian] * 4 + [metal] * 56)
+    assert rival is not POLICY
+    assert rival.energy_type == POLICY.cards[metal]["energyType"] != POLICY.energy_type
+    assert rival.power["Zacian ex"] > 0
