@@ -342,6 +342,32 @@ PANEL: dict[str, Archetype] = {
             1261: 1,  # Forest of Vitality
         },
     },
+    "mega_kangaskhan_ex-crustle-shaymin": {
+        "name": "Mega Kangaskhan ex / Crustle / Shaymin",
+        "entries": 45,
+        "win_rate": 0.667,
+        "cards": {
+            1: 1,  # Basic {G} Energy
+            11: 4,  # Mist Energy
+            14: 4,  # Spiky Energy
+            18: 4,  # Grow Grass Energy
+            343: 1,  # Shaymin
+            344: 4,  # Dwebble
+            345: 4,  # Crustle
+            756: 4,  # Mega Kangaskhan ex
+            1086: 4,  # Buddy-Buddy Poffin
+            1087: 1,  # Hand Trimmer
+            1122: 4,  # Pokégear 3.0
+            1123: 4,  # Switch
+            1147: 4,  # Jumbo Ice Cream
+            1159: 1,  # Hero’s Cape
+            1182: 2,  # Boss’s Orders
+            1197: 4,  # Xerosic’s Machinations
+            1225: 4,  # Hilda
+            1227: 4,  # Lillie's Determination
+            1264: 2,  # Battle Cage
+        },
+    },
     "thwackey-dipplin": {
         "name": "Thwackey / Dipplin",
         "entries": 54,

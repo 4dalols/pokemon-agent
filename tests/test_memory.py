@@ -177,3 +177,15 @@ def test_full_deck_search_pins_down_own_prizes_in_a_native_game() -> None:
         Battle.battle_ptr = None
     assert known
     assert all(sum(entry.cards.values()) == 60 for entry in LIBRARY)
+
+
+def test_threat_lists_the_pokemon_the_opponent_has_shown() -> None:
+    tracker = Tracker(POLICY.deck)
+    logs: list[LogEntry] = [
+        {"type": 10, "playerIndex": 1, "cardId": 678, "serial": 70},
+        {"type": 10, "playerIndex": 1, "cardId": 1182, "serial": 71},
+    ]
+    tracker.observe(observation(logs=logs))
+    current = observation()["current"]
+    assert current is not None
+    assert tracker.threat(current, CARDS, ATTACKS).attackers == (678,)

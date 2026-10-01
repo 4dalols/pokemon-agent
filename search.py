@@ -18,6 +18,7 @@ import math
 import random
 import time
 from collections import Counter
+from dataclasses import replace
 from typing import TypedDict, cast
 
 from archetypes import Predictor, Sampler
@@ -31,6 +32,8 @@ VALUE_SCALE = 1_000.0
 STEP_LIMIT = 400
 RIVAL_CACHE = 256
 MAIN, ENERGY = 0, 4
+END = 14
+LIKELY = 0.5
 
 
 class SearchState(TypedDict):
@@ -91,6 +94,7 @@ class Searcher:
         horizon: int = 1,
         epsilon: float = 0.0,
         tracker: Tracker | None = None,
+        idle: str = "heuristic",
     ) -> None:
         self.policy = policy
         self.tracker = tracker
@@ -106,6 +110,7 @@ class Searcher:
         self.games = games
         self.horizon = horizon
         self.epsilon = epsilon
+        self.idle = idle
         self.rng = random.Random(seed)
         self.rival = policy
         self.own_key = tuple(sorted(policy.deck))
@@ -169,6 +174,10 @@ class Searcher:
         """Distinct legal answers to try, the heuristic answer first."""
         scores = self.policy.scores(selection, current)
         ranked = self.policy.rank(scores)
+        if self.idle == "heuristic" and selection["type"] == MAIN:
+            ending = {i for i, option in enumerate(selection["option"]) if option["type"] == END}
+            if ranked[0] not in ending and any(scores[i] > 0 for i in ranked if i not in ending):
+                ranked = [i for i in ranked if i not in ending]
         low, high = selection["minCount"], min(selection["maxCount"], len(ranked))
         candidates = [fallback]
         if high <= 1:
@@ -232,12 +241,28 @@ class Searcher:
         try:
             self.tracker.observe(observation)
             if current is not None:
-                self.policy.threat = self.tracker.threat(
-                    current, self.policy.cards, self.policy.attacks
+                threat = self.tracker.threat(current, self.policy.cards, self.policy.attacks)
+                revealed = self.tracker.revealed(self.opponent(current), current)
+                expected = self.expected_pokemon(revealed)
+                self.policy.threat = replace(
+                    threat, attackers=tuple(sorted(set(threat.attackers) | expected))
                 )
         except (KeyError, TypeError, ValueError, AttributeError, IndexError):
             self.tracker.reset()
             self.policy.threat = Threat()
+
+    def expected_pokemon(self, revealed: Counter[int]) -> set[int]:
+        """Pokémon the opponent probably runs: posterior mass over the archetype library."""
+        posterior = self.predictor.posterior(revealed)
+        mass: dict[int, float] = {}
+        for entry in self.predictor.library:
+            weight = posterior.get(entry.name, 0.0)
+            if weight > 0.0:
+                for card_id in entry.cards:
+                    data = self.policy.cards.get(card_id)
+                    if data is not None and data["cardType"] == 0:
+                        mass[card_id] = mass.get(card_id, 0.0) + weight
+        return {card_id for card_id, weight in mass.items() if weight >= LIKELY}
 
     def prepare(self, current: Current) -> None:
         """Resolve the tracker/predictor once per decision; rollouts only reshuffle."""
