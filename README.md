@@ -85,10 +85,10 @@ combinations, or include a learned model.
 search API (`SearchBegin`/`SearchStep`). At each main-phase decision after turn 1 it
 samples the hidden cards (own deck order and prizes, the opponent's deck, prizes and
 hand, mirroring our deck list when the cards seen so far allow it), plays the top
-heuristic candidates through the simulator with the heuristic acting for both sides
-until the opponent's next turn ends, and picks the candidate with the best averaged
-prize/board outcome; terminal wins and losses dominate. Every other prompt stays
-heuristic.
+heuristic candidates through the simulator (our heuristic acting for us, a `Policy`
+built for the opponent's observed deck acting for them) until the opponent's next turn
+ends, and picks the candidate with the best averaged prize/board outcome; terminal wins
+and losses dominate. Every other prompt stays heuristic.
 
 The engine is taken from `kaggle_environments.envs.cabt.cg.sim` (present in the
 Kaggle runtime), falling back to a `cg` package on `sys.path`; without either the
