@@ -55,7 +55,9 @@ def tracked_deck(tracker: Tracker, theirs: Player, current: Current) -> list[int
 
 def play(job: tuple[str, int]) -> dict[str, float]:
     name, seed = job
-    deck = next(list(entry.cards.elements()) for entry in LIBRARY if entry.name == name)
+    deck = next(
+        list(entry.cards.elements()) for entry in SEARCHER.predictor.library if entry.name == name
+    )
     rng = random.Random(seed)
     tracker = Tracker(POLICY.deck)
     SEARCHER.rng.seed(seed)
@@ -101,7 +103,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--games", type=int, default=8, help="Games per opponent deck")
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--decks", nargs="+", default=[e.name for e in LIBRARY[:8]])
+    parser.add_argument(
+        "--decks",
+        nargs="+",
+        choices=[e.name for e in SEARCHER.predictor.library],
+        default=[e.name for e in LIBRARY[:8]],
+    )
     parser.add_argument("--output", type=Path, default=Path("results/prediction.json"))
     args = parser.parse_args()
     jobs = [(name, i) for name in args.decks for i in range(args.games)]
