@@ -6,7 +6,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from functools import partial
 from itertools import combinations
@@ -205,6 +205,36 @@ def summary(results: list[GameResult]) -> dict[str, object]:
     return groups
 
 
+def run_games(
+    jobs: list[tuple[str, int, int]],
+    workers: int,
+    path: Path,
+    search: bool,
+    deck: str,
+    main_worktree: Path | None = None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    results: list[GameResult] = []
+    play = partial(play_game, search=search, deck=deck, main_worktree=main_worktree)
+    with ProcessPoolExecutor(max_workers=workers, max_tasks_per_child=1) as executor:
+        futures = [executor.submit(play, job) for job in jobs]
+        for future in as_completed(futures):
+            results.append(future.result())
+            report = {
+                "engine": SOURCE,
+                "search": search,
+                "budget": 1.5,
+                "deck": deck,
+                "complete": len(results) == len(jobs),
+                "native_rng": "No native seed exposed; Python seed controls only random opponent",
+                "summary": summary(results),
+                "games": [asdict(result) for result in results],
+            }
+            path.write_text(json.dumps(report, indent=2))
+            print(f"{path.name}: {len(results)}/{len(jobs)}", flush=True)
+    print(json.dumps(report["summary"], indent=2), flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--games", type=int, default=40, help="Games per opponent")
@@ -228,51 +258,10 @@ def main() -> None:
         for left, right in combinations(DECKS, 2):
             path = args.output.with_name(f"{left}-vs-{right}.json")
             jobs = [(right, i % 2, i) for i in range(args.games)]
-            with ProcessPoolExecutor(max_workers=args.workers) as executor:
-                results = list(executor.map(partial(play_game, search=True, deck=left), jobs))
-            report = {
-                "engine": SOURCE,
-                "search": True,
-                "budget": 1.5,
-                "deck": left,
-                "native_rng": "No native seed exposed; seats alternate, games are independent",
-                "summary": summary(results),
-                "games": [asdict(r) for r in results],
-            }
-            path.write_text(json.dumps(report, indent=2))
-            print(left, right, json.dumps(report["summary"]), flush=True)
+            run_games(jobs, args.workers, path, True, left)
         return
     jobs = [(name, i % 2, i) for name in args.opponents for i in range(args.games)]
-    if args.workers == 1:
-        results = [
-            play_game(job, search=args.search, deck=args.deck, main_worktree=args.main_worktree)
-            for job in jobs
-        ]
-    else:
-        with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            results = list(
-                executor.map(
-                    partial(
-                        play_game,
-                        search=args.search,
-                        deck=args.deck,
-                        main_worktree=args.main_worktree,
-                    ),
-                    jobs,
-                )
-            )
-    report = {
-        "engine": SOURCE,
-        "search": args.search,
-        "budget": 1.5,
-        "deck": args.deck,
-        "native_rng": "No native seed exposed; Python seed controls only random opponent",
-        "summary": summary(results),
-        "games": [asdict(result) for result in results],
-    }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2))
-    print(json.dumps(report["summary"], indent=2))
+    run_games(jobs, args.workers, args.output, args.search, args.deck, args.main_worktree)
 
 
 if __name__ == "__main__":
