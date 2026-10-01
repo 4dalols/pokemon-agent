@@ -1,6 +1,7 @@
 import os
 
 from assets import ROOT, load_catalog, load_deck
+from memory import Tracker
 from policy import Policy
 from schema import Observation
 from search import Searcher, load_engine
@@ -12,6 +13,7 @@ SEARCHER = Searcher(
     load_engine(),
     budget=float(os.environ.get("PTCG_SEARCH_BUDGET", "1.5")),
     candidates=int(os.environ.get("PTCG_SEARCH_CANDIDATES", "6")),
+    tracker=Tracker(POLICY.deck),
 )
 
 

@@ -15,6 +15,8 @@ import time
 from collections import Counter
 from typing import TypedDict, cast
 
+from archetypes import Predictor
+from memory import Tracker
 from policy import Policy
 from schema import Current, Observation, Player
 
@@ -71,8 +73,10 @@ class Searcher:
         budget: float = 1.5,
         candidates: int = 6,
         seed: int | None = None,
+        tracker: Tracker | None = None,
     ) -> None:
         self.policy = policy
+        self.tracker = tracker
         self.engine = engine
         self.budget = budget
         self.candidates = candidates
@@ -86,6 +90,7 @@ class Searcher:
             for card in sorted(policy.cards.values(), key=lambda card: card["cardId"])
             if card["cardType"] == 5 and card["name"].startswith("Basic ")
         }
+        self.predictor = Predictor(policy.deck, policy.cards, self.rng)
         self.basics = [
             card["cardId"]
             for card in policy.cards.values()
@@ -93,6 +98,7 @@ class Searcher:
         ]
 
     def choose(self, observation: Observation, remaining: float | None = None) -> list[int]:
+        self.remember(observation)
         fallback = self.policy.choose(observation)
         selection, current = observation["select"], observation["current"]
         serialized = observation.get("search_begin_input")
@@ -136,20 +142,58 @@ class Searcher:
             return ranked[0]
         return max(ranked, key=lambda index: (totals[index], -ranked.index(index)))
 
-    def begin(self, current: Current, serialized: str) -> int | None:
-        me = current["yourIndex"]
-        mine, theirs = current["players"][me], current["players"][1 - me]
+    def remember(self, observation: Observation) -> None:
+        """Feed the observation to the tracker; a broken log never breaks the agent."""
+        if self.tracker is None:
+            return
+        try:
+            self.tracker.observe(observation)
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError):
+            self.tracker.reset()
+
+    def own_hidden(self, mine: Player, current: Current) -> tuple[list[int], list[int]] | None:
+        """Our (deck, prizes): exact from the tracker when known, otherwise sampled."""
+        if self.tracker is not None:
+            exact = self.tracker.own_hidden(mine, current)
+            if exact is not None:
+                deck, prizes = exact
+                self.rng.shuffle(deck)
+                return deck, prizes
         own_unseen = list((self.deck_pool - Counter(self.seen(mine))).elements())
         self.rng.shuffle(own_unseen)
         hidden_prizes = sum(card is None for card in mine["prize"])
         if len(own_unseen) < hidden_prizes + mine["deckCount"]:
             return None
-        my_prize = own_unseen[:hidden_prizes]
-        my_deck = own_unseen[hidden_prizes:]
+        return own_unseen[hidden_prizes:], own_unseen[:hidden_prizes]
+
+    def enemy_hidden(
+        self, theirs: Player, current: Current
+    ) -> tuple[list[int], list[int], list[int]]:
+        """Opponent (deck, hand, prizes) from the archetype mixture, else the old pool."""
+        if self.tracker is not None:
+            side = self.tracker.opponent(current)
+            revealed = self.tracker.revealed(theirs, current)
+            sampled = self.predictor.sample(theirs, current, side, revealed)
+            if sampled is not None:
+                return sampled
         enemy = self.enemy_pool(theirs)
         self.rng.shuffle(enemy)
         enemy_prizes = sum(card is None for card in theirs["prize"])
         enemy_hand = theirs["handCount"]
+        return (
+            enemy[enemy_prizes + enemy_hand :],
+            enemy[enemy_prizes : enemy_prizes + enemy_hand],
+            enemy[:enemy_prizes],
+        )
+
+    def begin(self, current: Current, serialized: str) -> int | None:
+        me = current["yourIndex"]
+        mine, theirs = current["players"][me], current["players"][1 - me]
+        own = self.own_hidden(mine, current)
+        if own is None:
+            return None
+        my_deck, my_prize = own
+        enemy_deck, enemy_hand, enemy_prize = self.enemy_hidden(theirs, current)
         payload = serialized.encode("ascii")
         raw = self.lib.SearchBegin(
             self.agent,
@@ -157,9 +201,9 @@ class Searcher:
             len(payload),
             ints(my_deck),
             ints(my_prize),
-            ints(enemy[enemy_prizes + enemy_hand :]),
-            ints(enemy[:enemy_prizes]),
-            ints(enemy[enemy_prizes : enemy_prizes + enemy_hand]),
+            ints(enemy_deck),
+            ints(enemy_prize),
+            ints(enemy_hand),
             ints([]),
             0,
         )

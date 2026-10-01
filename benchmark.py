@@ -1,17 +1,24 @@
 import argparse
+import importlib
 import json
+import os
 import random
+import sys
 import time
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from engine import SOURCE, Battle, battle_finish, battle_select, battle_start
 from main import ATTACKS, POLICY, SEARCHER
 from schema import Observation
+
+MAIN_WORKTREE = Path(
+    os.environ.get("PTCG_MAIN_WORKTREE", Path(__file__).resolve().parent.parent / "pokemon-main")
+)
 
 
 @dataclass
@@ -24,6 +31,42 @@ class GameResult:
     max_decision_ms: float
     seconds: float
     contexts: list[int]
+
+
+class Chooser(Protocol):
+    def choose(self, observation: Observation, remaining: float | None = None) -> list[int]: ...
+
+
+BASELINE_MODULES = (
+    "main",
+    "policy",
+    "search",
+    "schema",
+    "assets",
+    "engine",
+    "memory",
+    "archetypes",
+)
+BASELINE: dict[str, Chooser] = {}
+
+
+def load_baseline(worktree: Path) -> Chooser:
+    """Import an unmodified checkout's `main.SEARCHER` without disturbing our modules."""
+    key = str(worktree.resolve())
+    if key in BASELINE:
+        return BASELINE[key]
+    saved = {name: sys.modules.pop(name) for name in BASELINE_MODULES if name in sys.modules}
+    sys.path.insert(0, key)
+    try:
+        module = importlib.import_module("main")
+        chooser = cast(Chooser, module.SEARCHER)
+    finally:
+        sys.path.remove(key)
+        for name in BASELINE_MODULES:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved)
+    BASELINE[key] = chooser
+    return chooser
 
 
 def opponent_action(observation: Observation, kind: str, rng: random.Random) -> list[int]:
@@ -50,10 +93,14 @@ def opponent_action(observation: Observation, kind: str, rng: random.Random) -> 
 
 
 def play_game(
-    job: tuple[str, int, int], trace_path: Path | None = None, search: bool = False
+    job: tuple[str, int, int],
+    trace_path: Path | None = None,
+    search: bool = False,
+    worktree: Path | None = None,
 ) -> GameResult:
     opponent, seat, seed = job
     rng = random.Random(seed)
+    baseline = load_baseline(worktree or MAIN_WORKTREE) if opponent == "main" else None
     started = time.perf_counter()
     observation, start = battle_start(POLICY.deck, POLICY.deck)
     if start.errorPlayer >= 0:
@@ -88,6 +135,8 @@ def play_game(
             elif current["yourIndex"] == seat or opponent == "self":
                 action = POLICY.choose(obs)
                 maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
+            elif baseline is not None:
+                action = baseline.choose(obs)
             else:
                 action = opponent_action(obs, opponent, rng)
             if trace_path:
@@ -144,8 +193,14 @@ def main() -> None:
     parser.add_argument(
         "--opponents",
         nargs="+",
-        choices=["first", "random", "greedy", "self"],
+        choices=["first", "random", "greedy", "self", "main"],
         default=["first", "random", "greedy", "self"],
+    )
+    parser.add_argument(
+        "--main-worktree",
+        type=Path,
+        default=MAIN_WORKTREE,
+        help="Checkout of the unmodified main branch used by the 'main' opponent",
     )
     parser.add_argument("--output", type=Path, default=Path("results/benchmark.json"))
     parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
@@ -153,11 +208,12 @@ def main() -> None:
     if args.games < 1 or args.workers < 1:
         parser.error("games and workers must be positive")
     jobs = [(name, i % 2, i) for name in args.opponents for i in range(args.games)]
+    game = partial(play_game, search=args.search, worktree=args.main_worktree)
     if args.workers == 1:
-        results = [play_game(job, search=args.search) for job in jobs]
+        results = [game(job) for job in jobs]
     else:
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            results = list(executor.map(partial(play_game, search=args.search), jobs))
+            results = list(executor.map(game, jobs))
     report = {
         "engine": SOURCE,
         "search": args.search,

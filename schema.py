@@ -67,9 +67,24 @@ class Selection(TypedDict):
     effect: Card | None
 
 
+class LogEntry(TypedDict, total=False):
+    type: int
+    playerIndex: int
+    cardId: int
+    serial: int
+    cardIdTarget: int
+    serialTarget: int
+    fromArea: int
+    toArea: int
+    attackId: int
+    value: int
+    head: bool
+
+
 class Observation(TypedDict):
     select: Selection | None
     current: Current | None
+    logs: NotRequired[list[LogEntry] | None]
     search_begin_input: NotRequired[str | None]
     remainingOverageTime: NotRequired[float]
 
