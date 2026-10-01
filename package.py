@@ -11,6 +11,8 @@ FILES = (
     "schema.py",
     "search.py",
     "value.py",
+    "memory.py",
+    "archetypes.py",
     "assets.py",
     "cards.json",
     "deck.csv",

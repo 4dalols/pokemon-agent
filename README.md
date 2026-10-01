@@ -38,7 +38,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python prepare_assets.py
 .venv/bin/ruff check .
-.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py value.py train_value.py baseline.py prepare_assets.py benchmark.py package.py tests
+.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py value.py train_value.py baseline.py memory.py archetypes.py prediction.py prepare_assets.py benchmark.py package.py tests
 .venv/bin/pytest -q
 .venv/bin/python benchmark.py --games 100 --workers 4 --output results/benchmark.json
 .venv/bin/python package.py
@@ -118,6 +118,21 @@ Environment switches for experiments: `PTCG_SEARCH_PROMPTS=main` (main phase onl
 (bias the opponent's sampled hand away from cards they would have played last turn).
 `benchmark.py --search` plays the search agent against the heuristic opponents; the
 test suite runs with a 0.1 s budget (`tests/conftest.py`).
+
+`memory.Tracker` keeps per-game memory from the incremental `observation["logs"]`
+(reset whenever `round` changes or `turn` goes backwards): opponent card identities
+by serial with per-zone probabilities, our exact deck and prizes once a full-deck
+search has shown the whole deck, attacks, damage, coin flips and energy attachments.
+`archetypes.Predictor` holds a library of 60-card lists (the top Playground
+Dragapult ex list first, then lists reconstructed from public replays, plus a mirror
+of our own deck) and weights them by how many revealed opponent cards each list
+fails to explain; `search.Searcher.begin` samples the opponent's hidden deck, hand
+and prizes from that mixture and uses our exact prizes when known, falling back to
+the uniform pool whenever logs are missing or inconsistent. `Tracker.threat` feeds
+the heuristics (bench size against bench snipers, keeping Pokémon within revealed
+damage range out of the active spot, preferring attackers that hit weakness).
+`prediction.py` reports the log-likelihood of the opponent's actual draws under the
+old uniform predictor and the tracked mixture.
 
 ## Benchmarks and replay inspection
 

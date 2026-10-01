@@ -1,6 +1,7 @@
 import os
 
 from assets import ROOT, load_catalog, load_deck, locate
+from memory import Tracker
 from policy import Policy
 from schema import Observation
 from search import Searcher, load_engine
@@ -23,6 +24,7 @@ SEARCHER = Searcher(
     horizon=int(os.environ.get("PTCG_SEARCH_HORIZON", "1")),
     epsilon=float(os.environ.get("PTCG_SEARCH_EPSILON", "0")),
     model=MODEL,
+    tracker=Tracker(POLICY.deck),
 )
 
 

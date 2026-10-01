@@ -7,6 +7,7 @@ agents then coexist in one process, which the process-global native battle requi
 """
 
 import importlib
+import os
 import shutil
 import subprocess
 import sys
@@ -16,7 +17,17 @@ from typing import Protocol
 from schema import Observation
 
 ROOT = Path(__file__).resolve().parent
-MODULES = ("main", "policy", "schema", "search", "value", "assets", "engine")
+MODULES = (
+    "main",
+    "policy",
+    "schema",
+    "search",
+    "value",
+    "memory",
+    "archetypes",
+    "assets",
+    "engine",
+)
 GENERATED = ("cards.json", "deck.csv")
 DEFAULT_WORKTREE = ROOT / "results/main-worktree"
 
@@ -37,13 +48,15 @@ def ensure_worktree(path: Path, ref: str = "main") -> Path:
 
 
 def load_baseline(path: Path) -> Chooser:
-    """Import `path/main.py` and return its `SEARCHER` without disturbing our modules."""
+    """Import `path/main.py` with stock settings and return its `SEARCHER`, leaving ours intact."""
     ours = {name: sys.modules.pop(name) for name in MODULES if name in sys.modules}
+    settings = {name: os.environ.pop(name) for name in list(os.environ) if name.startswith("PTCG_")}
     sys.path.insert(0, str(path))
     try:
         module = importlib.import_module("main")
     finally:
         sys.path.remove(str(path))
+        os.environ.update(settings)
         for name in MODULES:
             loaded = sys.modules.pop(name, None)
             if loaded is not None:
