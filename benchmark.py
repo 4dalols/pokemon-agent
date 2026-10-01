@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 from typing import Protocol, cast
 
+from archetypes import LIBRARY
 from engine import SOURCE, Battle, battle_finish, battle_select, battle_start
 from main import ATTACKS, POLICY, SEARCHER
 from schema import Observation
@@ -97,12 +98,18 @@ def play_game(
     trace_path: Path | None = None,
     search: bool = False,
     worktree: Path | None = None,
+    opponent_deck: list[int] | None = None,
+    agent: str = "candidate",
 ) -> GameResult:
     opponent, seat, seed = job
     rng = random.Random(seed)
-    baseline = load_baseline(worktree or MAIN_WORKTREE) if opponent == "main" else None
+    baseline = load_baseline(worktree or MAIN_WORKTREE) if "main" in (opponent, agent) else None
+    chooser: Chooser = SEARCHER if agent == "candidate" or baseline is None else baseline
     started = time.perf_counter()
-    observation, start = battle_start(POLICY.deck, POLICY.deck)
+    decks = [POLICY.deck, POLICY.deck]
+    if opponent_deck is not None:
+        decks[1 - seat] = opponent_deck
+    observation, start = battle_start(decks[0], decks[1])
     if start.errorPlayer >= 0:
         raise ValueError(f"Native deck error: {start.errorPlayer}/{start.errorType}")
     contexts: set[int] = set()
@@ -130,7 +137,7 @@ def play_game(
             contexts.add(selection["context"])
             decision_started = time.perf_counter()
             if current["yourIndex"] == seat and search:
-                action = SEARCHER.choose(obs)
+                action = chooser.choose(obs)
                 maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
             elif current["yourIndex"] == seat or opponent == "self":
                 action = POLICY.choose(obs)
@@ -204,11 +211,34 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, default=Path("results/benchmark.json"))
     parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
+    parser.add_argument(
+        "--opponent-deck",
+        choices=[entry.name for entry in LIBRARY],
+        help="Archetype list the first/greedy/random opponent plays instead of our deck",
+    )
+    parser.add_argument(
+        "--agent",
+        choices=["candidate", "main"],
+        default="candidate",
+        help="Which search agent sits in the measured seat (requires --search)",
+    )
     args = parser.parse_args()
+    if args.opponent_deck is not None and "main" in args.opponents:
+        parser.error("the main opponent only plays its own deck")
     if args.games < 1 or args.workers < 1:
         parser.error("games and workers must be positive")
     jobs = [(name, i % 2, i) for name in args.opponents for i in range(args.games)]
-    game = partial(play_game, search=args.search, worktree=args.main_worktree)
+    opponent_deck = None
+    if args.opponent_deck is not None:
+        entry = next(e for e in LIBRARY if e.name == args.opponent_deck)
+        opponent_deck = sorted(entry.cards.elements())
+    game = partial(
+        play_game,
+        search=args.search,
+        worktree=args.main_worktree,
+        opponent_deck=opponent_deck,
+        agent=args.agent,
+    )
     if args.workers == 1:
         results = [game(job) for job in jobs]
     else:
@@ -217,6 +247,8 @@ def main() -> None:
     report = {
         "engine": SOURCE,
         "search": args.search,
+        "agent": args.agent,
+        "opponent_deck": args.opponent_deck,
         "native_rng": "No native seed exposed; Python seed controls only random opponent",
         "summary": summary(results),
         "games": [asdict(result) for result in results],
