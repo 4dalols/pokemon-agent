@@ -95,8 +95,8 @@ def validate_opponent(name: str) -> str:
     )
 
 
-def field_schedule(weights: dict[str, int], games: int) -> list[tuple[str, int]]:
-    """(deck, seat) for `games` field games split by weight (largest remainder), seats alternate."""
+def field_schedule(weights: dict[str, int], games: int) -> list[str]:
+    """Deck per field game: `games` split by weight (largest remainder), archetypes interleaved."""
     total = sum(weights.values())
     shares = {name: games * weight / total for name, weight in weights.items()}
     counts = {name: int(share) for name, share in shares.items()}
@@ -104,10 +104,8 @@ def field_schedule(weights: dict[str, int], games: int) -> list[tuple[str, int]]
         : games - sum(counts.values())
     ]:
         counts[name] += 1
-    schedule = [
-        ((k + 0.5) / count, name, k % 2) for name, count in counts.items() for k in range(count)
-    ]
-    return [(name, seat) for _, name, seat in sorted(schedule)]
+    schedule = [((k + 0.5) / count, name) for name, count in counts.items() for k in range(count)]
+    return [name for _, name in sorted(schedule)]
 
 
 def play_game(
@@ -328,8 +326,8 @@ def main() -> None:
         if name == "field":
             weights = {name: entries for name, (_, entries) in panel.items()}
             jobs.extend(
-                ("field", seat, i, deck)
-                for i, (deck, seat) in enumerate(field_schedule(weights, args.games))
+                ("field", i % 2, i, deck)
+                for i, deck in enumerate(field_schedule(weights, args.games))
             )
         else:
             jobs.extend(

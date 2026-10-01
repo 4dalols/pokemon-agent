@@ -25,12 +25,15 @@ from numpy.typing import NDArray
 
 from assets import ROOT, load_panel
 from benchmark import opponent_action
+from decks import DECKS, deck_list
 from engine import Battle, battle_finish, battle_select, battle_start
 from main import ATTACKS, CARDS, POLICY
 from policy import Policy
 from schema import Observation
 from search import Searcher, load_engine
 from value import FEATURE_NAMES, Featurizer, Weights
+
+OUR = POLICY
 
 Array = NDArray[np.float64]
 KINDS = ("policy", "policy", "policy", "policy", "search", "search", "greedy", "random", "first")
@@ -58,14 +61,14 @@ def play(job: Job) -> GameData:
     rng = random.Random(seed)
     featurizer = Featurizer(CARDS, ATTACKS)
     engine = load_engine()
-    policies = [POLICY, POLICY]
+    policies = [OUR, OUR]
     if job["opponent_deck"] is not None:
         policies[1 - job["our_seat"]] = Policy(job["opponent_deck"], CARDS, ATTACKS)
     searchers = [
         Searcher(policy, engine, budget=SEARCH_BUDGET, candidates=4, seed=seed + side)
         for side, policy in enumerate(policies)
     ]
-    reference = Searcher(POLICY, None)
+    reference = Searcher(OUR, None)
     kinds = job["kinds"]
     data: GameData = {"opponent": job["opponent"], "features": [], "heuristic": [], "labels": []}
     sides: list[int] = []
@@ -324,7 +327,13 @@ def main() -> None:
         help="Earlier weight file scored on the same holdout (default: the existing --output)",
     )
     parser.add_argument("--report", type=Path, help="Write the holdout table as JSON")
+    parser.add_argument(
+        "--deck", choices=sorted(DECKS), help="Train for a decks.py candidate instead of deck.csv"
+    )
     args = parser.parse_args()
+    if args.deck is not None:
+        global OUR
+        OUR = Policy(deck_list(args.deck), CARDS, ATTACKS)
     started = time.perf_counter()
     compare = args.compare if args.compare is not None else args.output
     previous = cast(Weights, json.loads(compare.read_text())) if compare.exists() else None
