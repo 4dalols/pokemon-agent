@@ -325,12 +325,6 @@ def main() -> None:
         default=MAX_TURNS,
         help="score a game still running after this many turns as a draw",
     )
-    parser.add_argument(
-        "--seed-offset",
-        type=int,
-        default=0,
-        help="first game seed; use it to extend a run with fresh games",
-    )
     parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
     parser.add_argument(
         "--opponent-deck",
