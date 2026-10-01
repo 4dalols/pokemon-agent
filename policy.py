@@ -1,5 +1,6 @@
 from collections import Counter
-from math import comb
+from itertools import combinations
+from math import ceil, comb
 
 from schema import AttackData, Card, CardData, Current, Observation, Option, Player, Selection
 
@@ -11,6 +12,15 @@ class Policy:
         self.deck = deck
         self.cards = cards
         self.attacks = attacks
+        self.deck_cards = {card_id: cards[card_id] for card_id in deck}
+        self.evolutions = {
+            data["name"]: [
+                evolution
+                for evolution in self.deck_cards.values()
+                if evolution["evolvesFrom"] == data["name"]
+            ]
+            for data in cards.values()
+        }
 
     def choose(self, observation: Observation) -> list[int]:
         selection = observation["select"]
@@ -35,7 +45,38 @@ class Policy:
         return current["yourIndex"] if index is None else index
 
     def scores(self, selection: Selection, current: Current) -> list[float]:
+        if selection["context"] == 14:
+            return self.counter_scores(selection, current)
         return [self.score(option, selection, current) for option in selection["option"]]
+
+    def counter_scores(self, selection: Selection, current: Current) -> list[float]:
+        cards = [self.resolve(option, selection, current) for option in selection["option"]]
+        live = [i for i, card in enumerate(cards) if card and card.get("hp", 0) > 0]
+        costs = {
+            i: ceil(card.get("hp", 0) / 10) for i, card in enumerate(cards) if card and i in live
+        }
+        prizes = {i: self.prizes(cards[i]) for i in live}
+        feasible = [
+            subset
+            for count in range(1, len(live) + 1)
+            for subset in combinations(live, count)
+            if sum(costs[i] for i in subset) <= selection["remainDamageCounter"]
+        ]
+        best = max(
+            feasible,
+            key=lambda subset: (sum(prizes[i] for i in subset), -sum(costs[i] for i in subset)),
+            default=(),
+        )
+        return [
+            (10000 if i in best else 0) - costs[i] if i in live else -100000
+            for i in range(len(cards))
+        ]
+
+    def prizes(self, card: Card | None) -> int:
+        if card is None:
+            return 0
+        data = self.cards[card["id"]]
+        return 3 if data["megaEx"] else 2 if data["ex"] else 1
 
     @staticmethod
     def rank(scores: list[float]) -> list[int]:
@@ -103,6 +144,21 @@ class Policy:
         if name == "Kyogre":
             return 60 if not names["Kyogre"] else 12
         if data["cardType"] == 5:
+            if 121 in self.deck_cards:
+                gain = max(
+                    (
+                        self.energy_deficit(entry) - self.energy_deficit(entry, data["energyType"])
+                        for entry in in_play
+                    ),
+                    default=0,
+                )
+                return 30 + 70 * gain
+            if data["energyType"] == 1 and any(
+                skill["name"] in ("Teal Dance", "Ripening Charge")
+                for entry in in_play
+                for skill in self.cards[entry["id"]]["skills"]
+            ):
+                return 90 if player["handCount"] < 6 else 70
             active = self.active(player)
             energies = len(active.get("energies", [])) if active else 0
             return 75 if energies < 2 and not current["energyAttached"] else 8
@@ -113,13 +169,58 @@ class Policy:
         if name == "Ultra Ball":
             needs_basic = names["Snover"] + names["Mega Abomasnow ex"] < 2
             needs_evolution = names["Snover"] and not self.has_hand(player, "Mega Abomasnow ex")
-            return 65 if needs_basic or needs_evolution else 5
+            if "Snover" in {data["name"] for data in self.deck_cards.values()}:
+                return 65 if needs_basic or needs_evolution else 5
+            return (
+                80
+                if len(in_play) < 3
+                or any(self.evolutions[self.cards[entry["id"]]["name"]] for entry in in_play)
+                else 15
+            )
         if name == "Powerglass":
             active = self.active(player)
             return 50 if active and not active.get("tools") else 5
         if name == "Team Rocket's Petrel":
             return 60 if not current["supporterPlayed"] else 5
+        if data["cardType"] == 0:
+            if data["evolvesFrom"]:
+                return 140 if names[data["evolvesFrom"]] else 35
+            if names[name] >= (3 if self.evolutions[name] or name == "Teal Mask Ogerpon ex" else 1):
+                return 5
+            return 100 if self.evolutions[name] or data["megaEx"] else 75
+        if name in ("Rare Candy", "Dawn", "Buddy-Buddy Poffin", "Poké Pad", "Bug Catching Set"):
+            return 85
+        if name == "Crushing Hammer":
+            return 70
+        if name == "Forest of Vitality":
+            return 100 if any(self.evolutions[self.cards[c["id"]]["name"]] for c in in_play) else 30
         return 20
+
+    def energy_need(self, card: Card) -> list[int]:
+        data = self.cards[card["id"]]
+        if any(skill["name"] == "Adrena-Brain" for skill in data["skills"]):
+            return [7]
+        while self.evolutions[data["name"]]:
+            data = self.evolutions[data["name"]][0]
+        if data["name"] == "Slowking":
+            return [5, 0]
+        if not data["attacks"]:
+            return []
+        attack = max((self.attacks[i] for i in data["attacks"]), key=lambda a: a["damage"])
+        return attack["energies"]
+
+    def energy_deficit(self, card: Card, extra: int | None = None) -> int:
+        have = Counter(card.get("energies", []))
+        if extra is not None:
+            have[extra] += 1
+        need = Counter(self.energy_need(card))
+        missing = 0
+        for kind, count in need.items():
+            if kind != 0:
+                used = min(have[kind], count)
+                have[kind] -= used
+                missing += count - used
+        return missing + max(0, need[0] - sum(have.values()))
 
     def has_hand(self, player: Player, name: str) -> bool:
         return any(self.cards[card["id"]]["name"] == name for card in player["hand"] or [])
@@ -136,7 +237,14 @@ class Policy:
             return score + (80 if self.has_hand(self.own(current), "Mega Abomasnow ex") else 30)
         if data["name"] == "Kyogre":
             return score + (150 if water and self.water_discard(current) >= 6 else 0)
-        return score
+        if data["name"] in ("Munkidori", "Fezandipiti ex", "Meowth ex"):
+            return card.get("hp", data["hp"]) / 10 - 50
+        return (
+            card.get("hp", data["hp"]) / 10
+            + 200
+            - 80 * self.energy_deficit(card)
+            + (50 if data["ex"] or data["megaEx"] else 0)
+        )
 
     def water_discard(self, current: Current) -> int:
         return sum(
@@ -180,6 +288,37 @@ class Policy:
             penalty = 15
         elif attack["name"] == "Swirling Waves":
             penalty = 40
+        elif attack["name"] == "Syrup Storm":
+            damage += 30 * sum(
+                card.get("energies", []).count(1)
+                for card in player["active"] + player["bench"]
+                if card is not None
+            )
+        elif attack["name"] == "Myriad Leaf Shower":
+            damage += 30 * sum(
+                len(card.get("energies", [])) for card in (active, defending) if card
+            )
+        elif attack["name"] == "Rapid-Fire Combo":
+            damage += 50
+        elif attack["name"] == "Trifrost":
+            damage = 110
+            penalty -= 110 * min(2, len(opponent["bench"]))
+        elif attack["name"] == "Thunder Raid":
+            damage = 0
+            penalty -= max(
+                (
+                    min(210, card.get("hp", 0)) + 300 * (card.get("hp", 0) <= 210)
+                    for card in opponent["bench"]
+                    if card and self.cards[card["id"]]["ex"]
+                ),
+                default=0,
+            )
+        elif attack["name"] == "Seek Inspiration":
+            damage = 150 if player["deckCount"] else 0
+        elif attack["name"] == "Phantom Dive":
+            penalty -= 60 if opponent["bench"] else 0
+        elif attack["name"] == "Itchy Pollen":
+            penalty -= 100 if current["turn"] < 6 else 30
         multiplier = 1
         resistance = 0
         if active and defending:
@@ -190,6 +329,9 @@ class Policy:
         effective = max(0, damage * multiplier - resistance)
         hp = defending.get("hp", 0) if defending else 0
         ko_probability = float(hp > 0 and effective >= hp)
+        if attack["name"] == "Rapid-Fire Combo" and hp > 0:
+            heads = max(0, ceil((hp + resistance - 200 * multiplier) / (50 * multiplier)))
+            ko_probability = 0.5**heads
         if attack["name"] == "Hammer-lanche" and unseen:
             draws = min(6, player["deckCount"])
             needed = max(1, (hp + resistance + 100 * multiplier - 1) // (100 * multiplier))
@@ -232,6 +374,15 @@ class Policy:
             data = self.cards[card["id"]]
             energies = len(target.get("energies", []))
             name = self.cards[target["id"]]["name"]
+            if data["cardType"] in (5, 6) and name not in ("Snover", "Mega Abomasnow ex", "Kyogre"):
+                deficit = self.energy_deficit(target)
+                gain = deficit - self.energy_deficit(target, data["energyType"])
+                return (
+                    400 * gain
+                    + (80 if option.get("inPlayArea") == 4 and gain else 0)
+                    + (30 if name == "Hydrapple ex" else 0)
+                    - 30 * energies
+                )
             if data["cardType"] == 5:
                 desired = 1 if name == "Kyogre" and self.water_discard(current) >= 5 else 3
                 if energies >= desired:
@@ -254,36 +405,119 @@ class Policy:
                     160 if self.best_bench(current) > self.readiness(active, current) + 40 else -120
                 )
             if self.cards[card["id"]]["basic"]:
-                return self.value(card, current) * 3 if len(player["bench"]) < 3 else -120
+                return (
+                    self.value(card, current) * 3
+                    if len(player["bench"]) < player["benchMax"]
+                    else -120
+                )
+            if name == "Crispin":
+                return 450 if active and self.energy_deficit(active) else 100
+            if name == "Academy at Night":
+                return 200
+            if name == "Ciphermaniac’s Codebreaking":
+                return 260
+            if name == "Xerosic’s Machinations":
+                hand = current["players"][1 - current["yourIndex"]]["handCount"]
+                return 90 * (hand - 3) if hand > 3 else -120
+            if name == "Boss’s Orders":
+                opponent = current["players"][1 - current["yourIndex"]]
+                targets = [
+                    self.gust_value(target, current) for target in opponent["bench"] if target
+                ]
+                improvement = max(targets, default=0) - self.gust_value(
+                    self.active(opponent), current
+                )
+                return 400 + improvement if improvement > 100 else -120
             return self.value(card, current) * 3
-        if kind in (10, 12):
+        if kind == 10 and card is not None:
+            skills = {skill["name"] for skill in self.cards[card["id"]]["skills"]}
+            if "Adrena-Brain" in skills:
+                damaged = any(
+                    entry and entry.get("maxHp", 0) > entry.get("hp", 0)
+                    for entry in player["active"] + player["bench"]
+                )
+                return 700 if damaged else -120
+            if skills & {"Teal Dance", "Ripening Charge"}:
+                return 650 if any(c["id"] == 1 for c in player["hand"] or []) else -120
+            if skills & {"Recon Directive", "Run Errand", "Flip the Script"}:
+                return 620 if player["deckCount"] > 3 else -120
+            if "Academy at Night" in skills:
+                return 170 if active and self.cards[active["id"]]["name"] == "Slowking" else -120
+            return -120
+        if kind == 12:
             improvement = self.best_bench(current) - self.readiness(active, current)
             return 350 + improvement if improvement > 40 else -120
         if kind == 11:
             return -150
         if kind == 0:
-            return float(option.get("number", 0)) if context == 38 else 0
+            return float(option.get("number", 0)) if context in (38, 39, 40) else 0
         if kind in (1, 2):
             return float(kind == 1)
         if kind in (3, 4, 5, 6):
+            if context == 26 and self.player_index(option, current) != current["yourIndex"]:
+                host_option: Option = {**option, "type": 3}
+                host = self.resolve(host_option, selection, current)
+                if host:
+                    energies = len(host.get("energies", []))
+                    return 200 / max(1, energies) + (100 if option.get("area") == 4 else 0)
+            if (
+                context == 9
+                and selection["effect"]
+                and self.cards[selection["effect"]["id"]]["name"] == "Academy at Night"
+            ):
+                return self.copy_attack_value(card, current)
+            if (
+                context == 7
+                and selection["effect"]
+                and self.cards[selection["effect"]["id"]]["name"] == "Ciphermaniac’s Codebreaking"
+            ):
+                return self.copy_attack_value(card, current)
             if context in (8, 9, 10, 11, 26, 27, 29, 30, 31, 32):
                 return 200 - self.value(card, current)
             if context == 1:
-                return 200 if card and self.cards[card["id"]]["name"] == "Snover" else 50
+                if card and self.cards[card["id"]]["name"] == "Snover":
+                    return 200
+                if 121 in self.deck_cards and card:
+                    return {235: 220, 119: 200, 112: 20}.get(card["id"], 50)
+                return self.readiness(card, current) + (
+                    100 if card and self.cards[card["id"]]["megaEx"] else 0
+                )
             if context in (3, 4):
                 if self.player_index(option, current) != current["yourIndex"]:
-                    return 400 - (card.get("hp", 0) if card else 0)
+                    return self.gust_value(card, current)
                 return self.readiness(card, current)
             if context in (13, 14, 15):
+                if context == 13 and card:
+                    hp = card.get("hp", 0)
+                    return (1000 * self.prizes(card) if 0 < hp <= 30 else 0) - hp
                 return 400 - (card.get("hp", 0) if card else 0)
             if context in (16, 17):
                 return float(card.get("maxHp", 0) - card.get("hp", 0)) if card else 0
             if context == 22:
                 return self.value(card, current)
             if context in (18, 21):
+                if context == 21 and card:
+                    return 300 - 50 * len(card.get("energies", [])) + 50 * self.energy_deficit(card)
                 return self.readiness(card, current)
             return self.value(card, current)
         return 0
+
+    def copy_attack_value(self, card: Card | None, current: Current) -> float:
+        if card is None:
+            return -100
+        data = self.cards[card["id"]]
+        if data["cardType"] != 0 or data["ex"] or data["megaEx"]:
+            return -100
+        return max((self.attack_score(i, current) for i in data["attacks"]), default=-100)
+
+    def gust_value(self, card: Card | None, current: Current) -> float:
+        if card is None:
+            return 0
+        active = self.active(self.own(current))
+        damage = 200 if active and active["id"] == 121 and not self.energy_deficit(active) else 0
+        hp = card.get("hp", 0)
+        knockout = 1000 * self.prizes(card) if 0 < hp <= damage else 0
+        return knockout + 400 - hp
 
     def best_bench(self, current: Current) -> float:
         return max(
