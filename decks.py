@@ -140,7 +140,7 @@ DECKS: dict[str, dict[int, int]] = {
 
 DECKS.update({slug: dict(archetype["cards"]) for slug, archetype in PANEL.items()})
 
-DEFAULT_DECK = "abomasnow"
+DEFAULT_DECK = "mega_kangaskhan_ex-cornerstone_mask_ogerpon_ex"
 
 
 def deck_list(name: str) -> list[int]:

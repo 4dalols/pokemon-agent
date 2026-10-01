@@ -1,9 +1,10 @@
 # Pokémon TCG CPU baseline
 
 A strategy-based agent for the Pokémon TCG AI Battle Challenge (Kaggle Playground).
-It plays the Mega Abomasnow ex / Kyogre deck shipped as the `kaggle-environments`
-sample deck and is validated against the official Playground SDK (R2 card pool,
-1431 cards) in both single games and the best-of-three Kaggle environment.
+It plays the Mega Kangaskhan ex / Cornerstone Mask Ogerpon ex (Crustle) ladder list,
+chosen by the field benchmark below (the stock Mega Abomasnow ex / Kyogre sample deck
+stays selectable as `abomasnow`), and is validated against the official Playground SDK
+(R2 card pool, 1431 cards) in both single games and the best-of-three Kaggle environment.
 
 ## Official files
 

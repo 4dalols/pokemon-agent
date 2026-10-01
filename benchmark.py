@@ -272,6 +272,12 @@ def main() -> None:
     )
     parser.add_argument("--deck", choices=sorted(DECKS), help="Candidate deck (default deck.csv)")
     parser.add_argument("--output", type=Path, default=Path("results/benchmark.json"))
+    parser.add_argument(
+        "--seed-offset",
+        type=int,
+        default=0,
+        help="first game seed; use it to extend a run with fresh games",
+    )
     parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
     parser.add_argument(
         "--opponent-search", action="store_true", help="self/deck opponents use rollout search"
@@ -284,10 +290,11 @@ def main() -> None:
         ensure_reference(args.main_ref)
     jobs: list[tuple[str, int, int]] = []
     for name in args.opponents:
+        start = args.seed_offset + len(jobs)
         if name == "field":
-            jobs.extend(field_jobs(args.games, len(jobs)))
+            jobs.extend(field_jobs(args.games, start))
         else:
-            jobs.extend((name, i % 2, len(jobs) + i) for i in range(args.games))
+            jobs.extend((name, i % 2, start + i) for i in range(args.games))
     play = partial(
         play_game,
         search=args.search,
