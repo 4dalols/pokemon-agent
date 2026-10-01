@@ -29,9 +29,7 @@ def ensure_worktree(path: Path, ref: str = "main") -> Path:
     """Check out `ref` into `path` (if missing) and copy the generated assets there."""
     if not (path / "main.py").exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["git", "worktree", "add", "--detach", str(path), ref], cwd=ROOT, check=True
-        )
+        subprocess.run(["git", "worktree", "add", "--detach", str(path), ref], cwd=ROOT, check=True)
     for name in GENERATED:
         if not (path / name).exists():
             shutil.copy(ROOT / name, path / name)

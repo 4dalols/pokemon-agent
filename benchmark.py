@@ -14,6 +14,8 @@ from engine import SOURCE, Battle, battle_finish, battle_select, battle_start
 from main import ATTACKS, POLICY, SEARCHER
 from schema import Observation
 
+OVERAGE = 600.0
+
 BASELINE: dict[Path, Chooser] = {}
 
 
@@ -25,7 +27,9 @@ class GameResult:
     steps: int
     turns: int
     max_decision_ms: float
+    opponent_max_decision_ms: float
     seconds: float
+    overage_used: list[float]
     contexts: list[int]
 
 
@@ -73,6 +77,8 @@ def play_game(
         raise ValueError(f"Native deck error: {start.errorPlayer}/{start.errorType}")
     contexts: set[int] = set()
     maximum = 0.0
+    opponent_maximum = 0.0
+    used = [0.0, 0.0]
     trace: list[dict[str, object]] = []
     try:
         for step in range(10000):
@@ -88,23 +94,32 @@ def play_game(
                     step,
                     current["turn"],
                     maximum,
+                    opponent_maximum,
                     time.perf_counter() - started,
+                    used,
                     sorted(contexts),
                 )
             if selection is None:
                 raise ValueError("Missing live selection")
             contexts.add(selection["context"])
+            mover = current["yourIndex"]
+            obs["remainingOverageTime"] = OVERAGE - used[mover]
             decision_started = time.perf_counter()
-            if current["yourIndex"] == seat and search:
-                action = SEARCHER.choose(obs)
-                maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
-            elif current["yourIndex"] == seat or opponent == "self":
+            if mover == seat and search:
+                action = SEARCHER.choose(obs, obs["remainingOverageTime"])
+            elif mover == seat or opponent == "self":
                 action = POLICY.choose(obs)
                 maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
             elif opponent == "main":
-                action = baseline(worktree).choose(obs)
+                action = baseline(worktree).choose(obs, obs["remainingOverageTime"])
             else:
                 action = opponent_action(obs, opponent, rng)
+            duration = time.perf_counter() - decision_started
+            used[mover] += duration
+            if mover == seat:
+                maximum = max(maximum, duration * 1000)
+            else:
+                opponent_maximum = max(opponent_maximum, duration * 1000)
             if trace_path:
                 trace.append({"observation": obs, "action": action})
             if not selection["minCount"] <= len(action) <= selection["maxCount"]:
@@ -146,6 +161,12 @@ def summary(results: list[GameResult]) -> dict[str, object]:
             "win_rate": proportion,
             "wilson_95": [center - margin, center + margin],
             "max_decision_ms": max(result.max_decision_ms for result in group),
+            "opponent_max_decision_ms": max(result.opponent_max_decision_ms for result in group),
+            "mean_game_seconds": sum(result.seconds for result in group) / n,
+            "max_overage_used": max(result.overage_used[result.baseline_seat] for result in group),
+            "opponent_max_overage_used": max(
+                result.overage_used[1 - result.baseline_seat] for result in group
+            ),
             "mean_turns": sum(result.turns for result in group) / n,
             "seats": dict(Counter(result.baseline_seat for result in group)),
         }
@@ -187,9 +208,10 @@ def main() -> None:
     report = {
         "engine": SOURCE,
         "search": args.search,
-        "native_rng": "No native seed exposed; Python seed controls only random opponent",
+        "workers": args.workers,
         "wall_seconds": wall,
         "games_per_second": len(jobs) / wall,
+        "native_rng": "No native seed exposed; Python seed controls only random opponent",
         "summary": summary(results),
         "games": [asdict(result) for result in results],
     }

@@ -1,29 +1,32 @@
 """Determinized rollout search on top of the heuristic policy.
 
-For a MAIN selection, hidden cards (own deck order and prizes, the opponent's deck,
-prizes and hand) are sampled; each candidate option is then played through the native
-simulator with the heuristic policy acting for both sides until the opponent's next
-turn ends. Candidates are ranked by the averaged outcome: terminal results, otherwise
-the learned win probability from `value.py` when weights are loaded, otherwise the
-hand-written prize/board score. The heuristic ranking is the fallback whenever no
-native engine is importable or the time budget is spent.
+At each searchable prompt the hidden cards (own deck order and prizes, the opponent's
+deck, prizes and hand) are sampled; each candidate answer is then played through the
+native simulator with the heuristic policy acting for both sides until the opponent's
+next turn ends. Candidates are ranked by the averaged outcome (terminal results,
+otherwise the learned win probability from `value.py` when weights are loaded,
+otherwise the hand-written prize/board score), with successive halving dropping the
+weakest half of the field at fixed fractions of the time budget. The heuristic answer
+is the fallback whenever no native engine is importable or the time budget is spent.
 """
 
 import ctypes
 import importlib
 import json
+import math
 import random
 import time
 from collections import Counter
 from typing import TypedDict, cast
 
 from policy import Policy
-from schema import Current, Observation, Player
+from schema import Current, Observation, Player, Selection
 from value import Featurizer, ValueModel
 
 TERMINAL = 10_000.0
 VALUE_SCALE = 1_000.0
 STEP_LIMIT = 400
+MAIN, ENERGY = 0, 4
 
 
 class SearchState(TypedDict):
@@ -73,9 +76,16 @@ class Searcher:
         policy: Policy,
         engine: ctypes.CDLL | None,
         budget: float = 1.5,
-        candidates: int = 6,
+        candidates: int = 8,
         seed: int | None = None,
         model: ValueModel | None = None,
+        prompts: str = "all",
+        halving: bool = True,
+        reserve: float = 60.0,
+        per_game: int = 40,
+        games: int = 3,
+        horizon: int = 1,
+        epsilon: float = 0.0,
     ) -> None:
         self.policy = policy
         self.engine = engine
@@ -83,10 +93,18 @@ class Searcher:
         self.featurizer = Featurizer(policy.cards, policy.attacks)
         self.budget = budget
         self.candidates = candidates
+        self.prompts = prompts
+        self.halving = halving
+        self.reserve = reserve
+        self.per_game = per_game
+        self.games = games
+        self.horizon = horizon
+        self.epsilon = epsilon
         self.rng = random.Random(seed)
         self.agent = engine.AgentStart() if engine is not None else None
         self.calls = 0
         self.samples = 0
+        self.spent = 0.0
         self.deck_pool = Counter(policy.deck)
         self.basic_energy = {
             card["energyType"]: card["cardId"]
@@ -108,40 +126,87 @@ class Searcher:
             or selection is None
             or current is None
             or not serialized
-            or selection["type"] != 0
-            or len(selection["option"]) < 2
+            or selection["type"] == ENERGY
+            or (selection["type"] != MAIN and self.prompts != "all")
             or current["turn"] < 2
             or any(card is None for card in self.opponent(current)["active"])
         ):
             return fallback
-        budget = self.budget if remaining is None else min(self.budget, (remaining - 100) / 250)
+        candidates = self.candidates_for(selection, current, fallback)
+        if len(candidates) < 2:
+            return fallback
+        budget = self.allocate(current, remaining)
         if budget <= 0.02:
             return fallback
-        ranked = self.policy.rank(self.policy.scores(selection, current))[: self.candidates]
-        if fallback[0] not in ranked:
-            ranked.insert(0, fallback[0])
-        return [self.search(current, serialized, ranked, budget)]
+        return self.search(current, serialized, candidates, budget)
 
-    def search(self, current: Current, serialized: str, ranked: list[int], budget: float) -> int:
+    def allocate(self, current: Current, remaining: float | None) -> float:
+        """Per-decision seconds: the cap, shrunk so the match stays inside its overage pool."""
+        if remaining is None:
+            return self.budget
+        games_left = max(1, self.games - current.get("round", 1) + 1)
+        return min(self.budget, (remaining - self.reserve) / (games_left * self.per_game))
+
+    def candidates_for(
+        self, selection: Selection, current: Current, fallback: list[int]
+    ) -> list[list[int]]:
+        """Distinct legal answers to try, the heuristic answer first."""
+        scores = self.policy.scores(selection, current)
+        ranked = self.policy.rank(scores)
+        low, high = selection["minCount"], min(selection["maxCount"], len(ranked))
+        candidates = [fallback]
+        if high <= 1:
+            candidates.extend([index] for index in ranked)
+            if low == 0:
+                candidates.append([])
+        else:
+            chosen = set(fallback)
+            unchosen = [index for index in ranked if index not in chosen]
+            weakest = sorted(fallback, key=lambda index: (scores[index], -index))
+            for out in weakest:
+                for inside in unchosen:
+                    candidates.append([inside if index == out else index for index in fallback])
+            if len(fallback) > low:
+                candidates.extend([index for index in fallback if index != out] for out in weakest)
+            if len(fallback) < high:
+                candidates.extend(fallback + [inside] for inside in unchosen)
+        distinct: list[list[int]] = []
+        for candidate in candidates:
+            if low <= len(candidate) <= high and candidate not in distinct:
+                distinct.append(candidate)
+        return distinct[: self.candidates]
+
+    def search(
+        self, current: Current, serialized: str, candidates: list[list[int]], budget: float
+    ) -> list[int]:
         me = current["yourIndex"]
-        totals = {index: 0.0 for index in ranked}
+        alive = list(range(len(candidates)))
+        totals = [0.0] * len(candidates)
+        rounds = max(1, math.ceil(math.log2(len(alive)))) if self.halving else 0
+        stage = 0
         samples = 0
         started = time.perf_counter()
         try:
-            while time.perf_counter() - started < budget:
+            while (elapsed := time.perf_counter() - started) < budget:
+                cut = budget * (stage + 1) / (rounds + 1)
+                if stage < rounds and len(alive) > 2 and elapsed >= cut:
+                    alive.sort(key=lambda index: (-totals[index], index))
+                    alive = alive[: max(2, math.ceil(len(alive) / 2))]
+                    stage += 1
                 root = self.begin(current, serialized)
                 if root is None:
                     break
-                for index in ranked:
-                    totals[index] += self.rollout(root, [index], me, current["turn"])
+                for index in alive:
+                    totals[index] += self.rollout(root, candidates[index], me, current["turn"])
                 samples += 1
         finally:
             self.lib.SearchEnd(self.agent)
         self.calls += 1
         self.samples += samples
+        self.spent += time.perf_counter() - started
         if samples == 0:
-            return ranked[0]
-        return max(ranked, key=lambda index: (totals[index], -ranked.index(index)))
+            return candidates[0]
+        return candidates[max(alive, key=lambda index: (totals[index], -index))]
 
     def begin(self, current: Current, serialized: str) -> int | None:
         me = current["yourIndex"]
@@ -185,13 +250,26 @@ class Searcher:
             selection = observation["select"]
             if current is None or selection is None or current["result"] >= 0:
                 break
-            if current["yourIndex"] == me and current["turn"] >= start_turn + 2:
+            if current["yourIndex"] == me and current["turn"] >= start_turn + 2 * self.horizon:
                 break
-            state = self.step(state["searchId"], self.policy.choose(observation))
+            state = self.step(state["searchId"], self.playout_choice(observation, selection))
             if state is None:
                 return -TERMINAL
             observation = state["observation"]
         return self.evaluate(observation, me)
+
+    def playout_choice(self, observation: Observation, selection: Selection) -> list[int]:
+        """Heuristic answer; with probability epsilon a random one of the top three main options."""
+        if (
+            self.epsilon > 0.0
+            and selection["type"] == MAIN
+            and len(selection["option"]) > 1
+            and observation["current"] is not None
+            and self.rng.random() < self.epsilon
+        ):
+            ranked = self.policy.rank(self.policy.scores(selection, observation["current"]))
+            return [self.rng.choice(ranked[:3])]
+        return self.policy.choose(observation)
 
     def step(self, search_id: int, select: list[int]) -> SearchState | None:
         raw = self.lib.SearchStep(self.agent, search_id, ints(select), len(select))
