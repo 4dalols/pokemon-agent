@@ -9,7 +9,18 @@ from search import Searcher, load_engine
 CARDS, ATTACKS = load_catalog(ROOT)
 DECK = load_deck(ROOT, CARDS, os.environ.get("PTCG_DECK_FILE", "deck.csv"))
 MODEL = None if os.environ.get("PTCG_HEURISTIC") else load_model(ROOT)
-POLICY = Policy(DECK, CARDS, ATTACKS) if MODEL is None else BCPolicy(DECK, CARDS, ATTACKS, MODEL)
+BC_TYPES = os.environ.get("PTCG_BC_TYPES")
+POLICY = (
+    Policy(DECK, CARDS, ATTACKS)
+    if MODEL is None
+    else BCPolicy(
+        DECK,
+        CARDS,
+        ATTACKS,
+        MODEL,
+        frozenset(int(kind) for kind in BC_TYPES.split(",")) if BC_TYPES else None,
+    )
+)
 SEARCHER = Searcher(
     POLICY,
     load_engine(),

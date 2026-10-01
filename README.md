@@ -87,7 +87,9 @@ so `Policy.choose`'s "take options scoring above zero" rule keeps working.
 `BCPolicy` reuses `Policy.choose` (positions, iterative energy payments, counts) and
 only replaces `scores()`; inference is pure Python (about 0.4 ms per decision) from
 `bc_model.json`, which ships in the archive. `main.py` falls back to the heuristic
-policy when the model file is missing or `PTCG_HEURISTIC` is set.
+policy when the model file is missing or `PTCG_HEURISTIC` is set;
+`PTCG_BC_TYPES=0,1` restricts the learned scores to those selection types (heuristic
+scores for the rest).
 
 Training data: every decision of agents whose episode `avg_score` is at least 800
 (or who belong to the top teams), with the Dragapult list weighted twice; 20% of the

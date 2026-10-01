@@ -214,3 +214,15 @@ def test_selection_without_state_falls_back_to_counts() -> None:
     }
     assert policy.choose({"select": prompt, "current": None}) == [0, 1]
     assert policy.choose({"select": None, "current": cast(Current, None)}) == policy.deck
+
+
+def test_restricted_types_fall_back_to_heuristic_scores(observation: Observation) -> None:
+    selection, current = observation["select"], observation["current"]
+    assert selection is not None and current is not None
+    heuristic = Policy(POLICY.deck, CARDS, ATTACKS)
+    policy = BCPolicy(POLICY.deck, CARDS, ATTACKS, toy_model(), frozenset({1}))
+    policy.weights = {f"s=0|pos={len(selection['option']) - 1}": 5.0}
+    assert policy.scores(selection, current) == heuristic.scores(selection, current)
+    policy.types = frozenset({0})
+    assert policy.scores(selection, current) != heuristic.scores(selection, current)
+    assert policy.choose(observation) == [len(selection["option"]) - 1]

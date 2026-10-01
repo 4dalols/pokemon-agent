@@ -240,6 +240,7 @@ class BCPolicy(Policy):
 
     The same-turn history is kept per (turn, player) and reset when either changes;
     `snapshot`/`restore` let the searcher branch without leaking rollout history.
+    `types` restricts the learned scores to those selection types (heuristic otherwise).
     """
 
     def __init__(
@@ -248,8 +249,10 @@ class BCPolicy(Policy):
         cards: dict[int, CardData],
         attacks: dict[int, AttackData],
         model: Model,
+        types: frozenset[int] | None = None,
     ) -> None:
         super().__init__(deck, cards, attacks)
+        self.types = types
         self.weights = model["weights"]
         self.bias = model["bias"]
         self.featurizer = Featurizer(cards, attacks)
@@ -279,6 +282,8 @@ class BCPolicy(Policy):
     def scores(self, selection: Selection, current: Current) -> list[float]:
         """Option scores; for optional picks they are relative to declining (> 0 = take)."""
         self.sync(current)
+        if self.types is not None and selection["type"] not in self.types:
+            return super().scores(selection, current)
         rows = self.featurizer.features(selection, current, self.history)
         weights = self.weights
         scores = [sum(weights.get(tag, 0.0) for tag in row) for row in rows]
