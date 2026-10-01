@@ -1,20 +1,32 @@
 # Pokémon TCG CPU baseline
 
-This is a local, strategy-based agent for the **public `kaggle-environments==1.32.7`
-cabt simulator**. It plays the public sample Mega Abomasnow ex / Kyogre deck.
-The archive is a **candidate for adaptation**, not a verified Playground submission.
+A strategy-based agent for the Pokémon TCG AI Battle Challenge (Kaggle Playground).
+It plays the Mega Abomasnow ex / Kyogre deck shipped as the `kaggle-environments`
+sample deck and is validated against the official Playground SDK (R2 card pool,
+1431 cards) in both single games and the best-of-three Kaggle environment.
 
-## Current competition gate
+## Official files
 
-The official Playground SDK, sample submission, and English R2 card files are still
-needed. They must establish the actual entrypoint, deck CSV format, eligible cards,
-best-of-three transitions, and runtime limits. No Kaggle upload has been attempted.
-The pinned public release runs single games; current GitHub master has a different
-catalog and best-of-three interpreter. Do not silently mix their metadata.
+The competition data zip (SDK source, sample submission with the `cg` Python package
+and native libraries, R2 card CSVs) is licensed for competition use only and must stay
+out of this public repository. Unpack it to `official-data/` (git-ignored):
 
-`deck.csv` currently uses `card_id,count` for this project's local tooling. Its
-schema has not been compared with the official sample. The Python entrypoint is
-`agent(observation) -> list[int]`; initialization returns the 60 card IDs.
+```text
+official-data/
+  EN_Card_Data_R2_full.csv
+  sample_submission/sample_submission/sample_submission/{main.py,deck.csv,cg/}
+  ptcg_engine_playground/...
+```
+
+`engine.py` picks the simulator for local tooling: `$PTCG_SDK` (a directory holding
+`cg/`), then the sample submission above, then the `cg` package bundled with
+`kaggle-environments`. The official SDK and current `kaggle-environments` master
+expose identical `AllCard`/`AllAttack` metadata.
+
+Submission contract, taken from the official sample: `main.py` at the archive root
+exposing `agent(observation: dict) -> list[int]`; the first call has
+`observation["select"] is None` and must return the 60 card IDs; `deck.csv` holds one
+card ID per line with no header; on Kaggle the files live in `/kaggle_simulations/agent/`.
 
 ## Reproduce the local setup
 
@@ -22,23 +34,24 @@ Verified on Ubuntu, Python 3.12, CPU only:
 
 ```sh
 python3.12 -m venv .venv
-.venv/bin/python -m pip install --no-deps kaggle-environments==1.32.7
+.venv/bin/python -m pip install --no-deps 'kaggle-environments @ git+https://github.com/Kaggle/kaggle-environments@master'
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python prepare_assets.py
 .venv/bin/ruff check .
-.venv/bin/mypy main.py policy.py schema.py assets.py prepare_assets.py benchmark.py package.py tests
+.venv/bin/mypy main.py policy.py schema.py assets.py engine.py prepare_assets.py benchmark.py package.py tests
 .venv/bin/pytest -q
-.venv/bin/python benchmark.py --games 60 --workers 2 --output results/benchmark.json
+.venv/bin/python benchmark.py --games 100 --workers 4 --output results/benchmark.json
 .venv/bin/python package.py
 ```
 
+`kaggle-environments` master is required for the best-of-three `cabt` environment and
+the R2 card pool; the PyPI 1.32.7 release is a single-game build with 1267 cards.
 Only the cabt engine and its needed Python dependencies are installed. An import
 warning about missing `pyspiel` belongs to another environment and does not prevent
-cabt battles. Installing every Kaggle environment's optional dependencies is not
-required for this project.
+cabt battles.
 
-`prepare_assets.py` exports metadata from the exact installed native engine and
-generates the public sample deck. It overwrites `cards.json` and `deck.csv`; keep
+`prepare_assets.py` exports metadata from the resolved native engine and writes the
+deck. It overwrites `cards.json` and `deck.csv`; keep
 modified deck lists elsewhere before rerunning it. The generated files are excluded
 from Git by default. The runtime agent itself uses only Python's standard library.
 
@@ -53,9 +66,8 @@ from Git by default. The runtime agent itself uses only Python's standard librar
 - Interpret follow-up choices as option **positions**, including iterative energy
   payments, optional searches, facedown prizes, and replacement active Pokémon.
 
-The policy is stateless apart from immutable deck and metadata, so it does not reuse
-turn counters or serial-number caches between games. This does not establish that
-the official best-of-three wrapper is compatible.
+The policy is stateless apart from immutable deck and metadata, so it carries nothing
+between the games of a best-of-three match.
 
 This is a starting heuristic. It does not model every opposing Ability, optimize
 all Trainer combinations, perform simulator search, or include a learned model.
@@ -88,19 +100,16 @@ indices. It is for inspection, not a deterministic simulator replay.
 
 ## Packaging
 
-`package.py` creates `dist/public-baseline.tar.gz`, with `main.py` and `deck.csv`
-at its root plus its local modules and generated metadata. No virtual environment,
-native library, credentials, or training data is embedded. Local checks should also
-run the extracted archive through Kaggle's file-based agent loader in a fresh process.
-
-Keep restricted competition files out of a public repository. The source project
-can be moved into a repository once a destination is chosen; no unrelated repository
-has been changed.
+`package.py` creates `dist/submission.tar.gz`, with `main.py` and `deck.csv` at its
+root plus the local modules and generated metadata. The runtime uses only the standard
+library, so no `cg` package, native library, or virtual environment is embedded.
+Before uploading, extract the archive elsewhere and run it through
+`kaggle_environments.make("cabt", configuration={"bo": 3})` from a different working
+directory in a fresh process.
 
 ## Sources
 
 - [Competition](https://www.kaggle.com/competitions/the-pokemon-company-ptcg-ai-battle-challenge-playground/overview)
 - [Official data access](https://www.kaggle.com/competitions/the-pokemon-company-ptcg-ai-battle-challenge-playground/data)
 - [Simulator API](https://matsuoinstitute.github.io/cabt/api.html)
-- [Pinned public package](https://pypi.org/project/kaggle-environments/1.32.7/)
 - [Current upstream implementation](https://github.com/Kaggle/kaggle-environments/tree/master/kaggle_environments/envs/cabt)

@@ -34,6 +34,9 @@ class Current(TypedDict):
     looking: list[Card | None] | None
     energyAttached: bool
     supporterPlayed: bool
+    win: NotRequired[int]
+    draw: NotRequired[int]
+    round: NotRequired[int]
 
 
 class Option(TypedDict):

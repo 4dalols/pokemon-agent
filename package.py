@@ -17,12 +17,11 @@ def package(output: Path) -> None:
             archive.add(ROOT / name, arcname=name)
     if output.stat().st_size > 197.7 * 1024 * 1024:
         raise ValueError("Archive exceeds the published size limit")
-    print(f"Public simulator candidate: {output} ({output.stat().st_size:,} bytes)")
-    print("Current Playground entrypoint, CSV schema, and card eligibility require SDK validation")
+    print(f"Submission archive: {output} ({output.stat().st_size:,} bytes)")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=ROOT / "dist/public-baseline.tar.gz")
+    parser.add_argument("--output", type=Path, default=ROOT / "dist/submission.tar.gz")
     args = parser.parse_args()
     package(args.output)

@@ -2,11 +2,10 @@ import copy
 
 import pytest
 from kaggle_environments import make
-from kaggle_environments.envs.cabt.cg.game import battle_finish, battle_start
-from kaggle_environments.envs.cabt.cg.sim import Battle
 
 from assets import ROOT, validate_deck
 from benchmark import play_game
+from engine import Battle, battle_finish, battle_start
 from main import ATTACKS, CARDS, POLICY, agent
 from schema import Current, Observation, Selection
 
@@ -152,3 +151,10 @@ def test_kaggle_runner_loads_file_without_file_global_and_restarts() -> None:
         environment = make("cabt", debug=True)
         environment.run([str(ROOT / "main.py"), "random"])
         assert all(state.status == "DONE" for state in environment.state)
+
+
+def test_kaggle_best_of_three_match_completes() -> None:
+    environment = make("cabt", configuration={"bo": 3}, debug=True)
+    environment.run([str(ROOT / "main.py"), str(ROOT / "main.py")])
+    assert all(state.status == "DONE" for state in environment.state)
+    assert sum(environment.result) >= 2

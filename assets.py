@@ -1,4 +1,3 @@
-import csv
 import json
 from collections import Counter
 from pathlib import Path
@@ -7,10 +6,16 @@ from typing import cast
 from schema import AttackData, CardData, Catalog
 
 ROOT = Path(__file__).resolve().parent
+KAGGLE_AGENT_DIR = Path("/kaggle_simulations/agent")
+
+
+def locate(root: Path, name: str) -> Path:
+    path = root / name
+    return path if path.exists() else KAGGLE_AGENT_DIR / name
 
 
 def load_catalog(root: Path) -> tuple[dict[int, CardData], dict[int, AttackData]]:
-    catalog = cast(Catalog, json.loads((root / "cards.json").read_text()))
+    catalog = cast(Catalog, json.loads(locate(root, "cards.json").read_text(encoding="utf-8")))
     return (
         {card["cardId"]: card for card in catalog["cards"]},
         {attack["attackId"]: attack for attack in catalog["attacks"]},
@@ -18,9 +23,8 @@ def load_catalog(root: Path) -> tuple[dict[int, CardData], dict[int, AttackData]
 
 
 def load_deck(root: Path, cards: dict[int, CardData]) -> list[int]:
-    with (root / "deck.csv").open(newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    deck = [int(row["card_id"]) for row in rows for _ in range(int(row["count"]))]
+    lines = locate(root, "deck.csv").read_text().split("\n")
+    deck = [int(line.strip()) for line in lines if line.strip()]
     validate_deck(deck, cards)
     return deck
 

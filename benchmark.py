@@ -8,9 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast
 
-from kaggle_environments.envs.cabt.cg.game import battle_finish, battle_select, battle_start
-from kaggle_environments.envs.cabt.cg.sim import Battle
-
+from engine import Battle, battle_finish, battle_select, battle_start
 from main import ATTACKS, POLICY
 from schema import Observation
 
