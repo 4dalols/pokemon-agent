@@ -93,7 +93,12 @@ class Searcher:
         ]
 
     def choose(self, observation: Observation, remaining: float | None = None) -> list[int]:
-        fallback = self.policy.choose(observation)
+        action = self.decide(observation, remaining)
+        self.policy.observe(observation, action)
+        return action
+
+    def decide(self, observation: Observation, remaining: float | None) -> list[int]:
+        fallback = self.policy.decide(observation)
         selection, current = observation["select"], observation["current"]
         serialized = observation.get("search_begin_input")
         if (
@@ -113,22 +118,28 @@ class Searcher:
         ranked = self.policy.rank(self.policy.scores(selection, current))[: self.candidates]
         if fallback[0] not in ranked:
             ranked.insert(0, fallback[0])
-        return [self.search(current, serialized, ranked, budget)]
+        return [self.search(observation, ranked, budget)]
 
-    def search(self, current: Current, serialized: str, ranked: list[int], budget: float) -> int:
+    def search(self, observation: Observation, ranked: list[int], budget: float) -> int:
+        current, serialized = observation["current"], observation["search_begin_input"]
+        assert current is not None and serialized is not None
         me = current["yourIndex"]
         totals = {index: 0.0 for index in ranked}
         samples = 0
         started = time.perf_counter()
+        state = self.policy.snapshot()
         try:
             while time.perf_counter() - started < budget:
                 root = self.begin(current, serialized)
                 if root is None:
                     break
                 for index in ranked:
+                    self.policy.restore(state)
+                    self.policy.observe(observation, [index])
                     totals[index] += self.rollout(root, [index], me, current["turn"])
                 samples += 1
         finally:
+            self.policy.restore(state)
             self.lib.SearchEnd(self.agent)
         self.calls += 1
         self.samples += samples
