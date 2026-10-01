@@ -1,6 +1,7 @@
 from collections import Counter
 from math import comb
 
+from memory import Threat
 from schema import AttackData, Card, CardData, Current, Observation, Option, Player, Selection
 
 
@@ -11,6 +12,7 @@ class Policy:
         self.deck = deck
         self.cards = cards
         self.attacks = attacks
+        self.threat = Threat()
 
     def choose(self, observation: Observation) -> list[int]:
         selection = observation["select"]
@@ -125,8 +127,19 @@ class Policy:
         return any(self.cards[card["id"]]["name"] == name for card in player["hand"] or [])
 
     def readiness(self, card: Card | None, current: Current) -> float:
+        """How good a Pokémon is as the next active, adjusted for the known matchup."""
         if card is None:
             return 0
+        score = self.base_readiness(card, current)
+        data = self.cards[card["id"]]
+        hp = card.get("hp", data["hp"])
+        if 0 < hp <= self.threat.max_damage:
+            score -= 80
+        if self.threat.weakness is not None and data["energyType"] == self.threat.weakness:
+            score += 60
+        return score
+
+    def base_readiness(self, card: Card, current: Current) -> float:
         data = self.cards[card["id"]]
         water = card.get("energies", []).count(3)
         score = water * 35 + card.get("hp", data["hp"]) / 10
@@ -254,7 +267,8 @@ class Policy:
                     160 if self.best_bench(current) > self.readiness(active, current) + 40 else -120
                 )
             if self.cards[card["id"]]["basic"]:
-                return self.value(card, current) * 3 if len(player["bench"]) < 3 else -120
+                room = len(player["bench"]) < (2 if self.threat.bench_sniper else 3)
+                return self.value(card, current) * 3 if room else -120
             return self.value(card, current) * 3
         if kind in (10, 12):
             improvement = self.best_bench(current) - self.readiness(active, current)

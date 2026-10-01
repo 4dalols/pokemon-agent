@@ -16,7 +16,7 @@ from collections import Counter
 from typing import TypedDict, cast
 
 from archetypes import Predictor
-from memory import Tracker
+from memory import Threat, Tracker
 from policy import Policy
 from schema import Current, Observation, Player
 
@@ -146,10 +146,16 @@ class Searcher:
         """Feed the observation to the tracker; a broken log never breaks the agent."""
         if self.tracker is None:
             return
+        current = observation["current"]
         try:
             self.tracker.observe(observation)
+            if current is not None:
+                self.policy.threat = self.tracker.threat(
+                    current, self.policy.cards, self.policy.attacks
+                )
         except (KeyError, TypeError, ValueError, AttributeError, IndexError):
             self.tracker.reset()
+            self.policy.threat = Threat()
 
     def own_hidden(self, mine: Player, current: Current) -> tuple[list[int], list[int]] | None:
         """Our (deck, prizes): exact from the tracker when known, otherwise sampled."""

@@ -10,12 +10,27 @@ simply knows less.
 """
 
 from collections import Counter
+from dataclasses import dataclass
 
-from schema import Card, Current, LogEntry, Observation, Player
+from schema import AttackData, Card, CardData, Current, LogEntry, Observation, Player
 
 DECK, HAND, DISCARD, ACTIVE, BENCH, PRIZE = 1, 2, 3, 4, 5, 6
 LOG_DRAW, LOG_MOVE, LOG_MOVE_HIDDEN, LOG_PLAY, LOG_ATTACH = 4, 6, 7, 10, 11
 LOG_EVOLVE, LOG_ATTACK, LOG_HP, LOG_COIN = 12, 15, 16, 22
+
+
+@dataclass(frozen=True)
+class Threat:
+    """Matchup facts the heuristics key on; the defaults change nothing."""
+
+    bench_sniper: bool = False
+    max_damage: int = 0
+    weakness: int | None = None
+
+
+def snipes_bench(attack: AttackData) -> bool:
+    text = attack["text"]
+    return "Benched Pokémon" in text and ("damage" in text or "Knocked Out" in text)
 
 
 class Side:
@@ -194,6 +209,26 @@ class Tracker:
 
     def max_damage(self, current: Current) -> int:
         return max(self.opponent(current).damage_dealt, default=0)
+
+    def threat(
+        self, current: Current, cards: dict[int, CardData], attacks: dict[int, AttackData]
+    ) -> Threat:
+        theirs = current["players"][1 - current["yourIndex"]]
+        revealed = self.revealed(theirs, current)
+        sniper = any(
+            snipes_bench(attacks[attack_id])
+            for card_id in revealed
+            if card_id in cards
+            for attack_id in cards[card_id]["attacks"]
+            if attack_id in attacks
+        )
+        defending = theirs["active"][0] if theirs["active"] else None
+        weakness = None
+        if defending is not None and defending["id"] in cards:
+            data = cards[defending["id"]]
+            if data["ex"] and data["hp"] >= 280:
+                weakness = data["weakness"]
+        return Threat(sniper, self.max_damage(current), weakness)
 
 
 def visible(player: Player, current: Current) -> list[int]:
