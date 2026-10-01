@@ -1,9 +1,10 @@
 # Pokémon TCG CPU baseline
 
 A strategy-based agent for the Pokémon TCG AI Battle Challenge (Kaggle Playground).
-It plays the Mega Abomasnow ex / Kyogre deck shipped as the `kaggle-environments`
-sample deck and is validated against the official Playground SDK (R2 card pool,
-1431 cards) in both single games and the best-of-three Kaggle environment.
+The primary candidate is the exact Dragapult ex list supplied from the Playground
+leaders. Hydrapple/Ogerpon/Meganium, Mega Kangaskhan/Slowking and the original
+Mega Abomasnow/Kyogre remain selectable for comparison. Validation uses the official
+Playground SDK (R2 card pool, 1431 cards) and the best-of-three Kaggle environment.
 
 ## Official files
 
@@ -57,6 +58,16 @@ from Git by default. The runtime agent itself uses only Python's standard librar
 
 ## Strategy
 
+The Dragapult policy evolves Dreepy through Drakloak, uses Recon Directive to
+develop its board, funds Phantom Dive with Fire and Psychic Energy, and allocates
+its six counters across reachable knockouts. It attaches Darkness Energy to
+Munkidori for Adrena-Brain, opens with Budew for Item lock, uses Crushing Hammer
+on low-Energy attackers, and prioritizes Boss targets that yield Prizes.
+Xerosic's value grows with the opponent's hand size. These are heuristic values,
+not a complete matchup model or exact multi-turn solver.
+
+The original Abomasnow strategy is retained:
+
 - Lead with Snover when available, develop its evolution, and fund the active attacker.
 - Use Mega Abomasnow ex's Hammer-lanche with an estimated remaining Water Energy
   density and knockout probability; prefer Frost Barrier when it scores better.
@@ -93,6 +104,78 @@ answer is used whenever the budget is spent or the engine rejects a prediction.
 test suite runs with a 0.1 s budget (`tests/conftest.py`).
 
 ## Benchmarks and replay inspection
+
+### Ported archetypes
+
+`prepare_assets.DECKS` contains `abomasnow`, `dragapult`, `kangaskhan`, and
+`hydrapple`. Generate a particular submission deck with
+`PTCG_DECK=hydrapple .venv/bin/python prepare_assets.py` before packaging.
+The environment variable selects the asset generation step; the deployed agent
+reads the generated `deck.csv`. No SDK files are included in the archive.
+
+The ports preserve each archetype's core rather than copying tournament lists
+verbatim. Dragapult uses Recon Directive and Phantom Dive; Kangaskhan/Slowking
+uses Run Errand, Academy at Night and Ciphermaniac's Codebreaking to copy Kyurem
+or Zeraora; Hydrapple/Ogerpon uses Grass acceleration and board-wide damage scaling.
+The existing main-phase search is unchanged. Follow-up decisions use the policy,
+including colored Energy requirements and damage counters that prioritize
+reachable knockouts without targeting already defeated Pokémon.
+
+Sources and adaptation notes:
+
+- [Previous-round meta report](https://www.kaggle.com/competitions/pokemon-tcg-ai-battle/discussion/737107)
+- [Dragapult R2 IDs](https://raw.githubusercontent.com/frankiesardo/extreme-speed/main/decks/dragapult.txt)
+  and [tournament reference](https://www.limitlesstcg.com/decks/list/27265): the
+  final `dragapult` candidate is the exact 60-card Playground top-two list
+  supplied on 2026-10-01. Every supplied ID and name maps to R2. It retains
+  Munkidori/Darkness, Budew, four Crushing Hammer, two Xerosic's Machinations
+  and two Jamming Tower. The preliminary simplified port was superseded before
+  the final evaluation. Counter allocation maximizes reachable Prizes across
+  multiple knockouts; Munkidori removes damage from the friendly board and
+  targets opposing knockouts. Energy attachment funds Adrena-Brain separately
+  from Munkidori's attack.
+- [Kangaskhan/Slowking reference](https://www.limitlesstcg.com/decks/list/28251):
+  **Telepathic Psychic Energy is the only unmapped name in these three source
+  lists**; replace it with Basic Psychic Energy. Omit Metagross and Lillie's
+  Clefairy ex, increase Kyurem/Zeraora and Energy, and simplify the Tool package.
+  Those omitted Pokémon and Tools are present in R2, not mapping failures.
+- [Hydrapple/Ogerpon reference](https://www.limitlesstcg.com/decks/list/27727):
+  the final candidate is the exact Steve421471 public-replay list supplied on
+  2026-10-01, including Meganium, Tapu Bulu and four Forest of Vitality. Every
+  supplied ID and name maps to R2. Wild Growth and Forest of Vitality are passive
+  effects handled by the engine; the policy reads its effective Energy counts
+  and available evolution options. Alakazam was not evaluated.
+- [Official simulator differences](https://www.kaggle.com/competitions/pokemon-tcg-ai-battle/discussion/708586):
+  legal options are authoritative (some attacks with no applicable effect are
+  absent), simultaneous final Prize claims are draws, and some target ordering
+  is automatic. The agent selects only offered options.
+
+Run the full four-deck round robin (100 independent games per pairing, 50 in
+each seat; both sides use default 1.5-second search budgets):
+
+```sh
+.venv/bin/python benchmark.py --round-robin --games 100 --workers 8 --search
+```
+
+To compare against a frozen, unmodified main, create a detached worktree at the
+desired commit, generate its original assets inside that worktree, and pass its
+absolute path. The loader imports that worktree's `main`, `assets`, `policy`,
+`schema`, and `search` together, then restores the candidate's modules.
+
+```sh
+.venv/bin/python benchmark.py --deck hydrapple --search --games 100 --workers 8 \
+  --opponents main first greedy random --main-worktree /path/to/frozen-main \
+  --output results/hydrapple-validation.json
+```
+
+JSON reports include raw games, seats, wins/losses/draws, Wilson 95% intervals,
+maximum decision latency, and maximum per-game overage use for both players.
+The single-game benchmark starts each seat with 600 seconds; the separately
+validated packaged best-of-three shares 600 seconds across the entire match.
+Unsetting `PTCG_SEARCH_BUDGET` and `PTCG_SEARCH_CANDIDATES` preserves frozen main's
+defaults. Weak opponents use the candidate deck; deck-vs-deck opponents use their
+named deck. Native randomness is not seedable, so seat balance does not mean
+identical shuffled draws.
 
 `benchmark.py` validates selection counts and indices before every native action.
 Native rejections and games exceeding 10,000 decisions raise errors rather than

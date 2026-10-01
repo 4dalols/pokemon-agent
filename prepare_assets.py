@@ -1,5 +1,6 @@
 import ctypes
 import json
+import os
 from pathlib import Path
 from typing import cast
 
@@ -8,7 +9,7 @@ from engine import SOURCE, lib
 from schema import AttackData, CardData, Catalog
 
 ROOT = Path(__file__).resolve().parent
-DECK = {
+ABOMASNOW = {
     721: 2,
     722: 4,
     723: 4,
@@ -21,6 +22,84 @@ DECK = {
     1262: 2,
     3: 33,
 }
+DECKS = {
+    "abomasnow": ABOMASNOW,
+    "dragapult": {
+        2: 4,
+        5: 4,
+        7: 2,
+        112: 2,
+        119: 4,
+        120: 4,
+        121: 3,
+        1071: 1,
+        140: 1,
+        235: 1,
+        1227: 4,
+        1086: 4,
+        1121: 4,
+        1152: 4,
+        1198: 3,
+        1182: 3,
+        1120: 4,
+        1197: 2,
+        1097: 2,
+        1080: 1,
+        1231: 1,
+        1246: 2,
+    },
+    "kangaskhan": {
+        756: 3,
+        162: 4,
+        163: 3,
+        184: 2,
+        144: 3,
+        377: 2,
+        140: 1,
+        1071: 1,
+        1227: 4,
+        1188: 4,
+        1248: 4,
+        1121: 4,
+        1152: 3,
+        1146: 3,
+        1097: 2,
+        1092: 1,
+        1123: 1,
+        5: 11,
+        9: 4,
+    },
+    "hydrapple": {
+        92: 2,
+        93: 2,
+        150: 2,
+        96: 4,
+        140: 1,
+        1071: 2,
+        709: 2,
+        710: 2,
+        917: 2,
+        920: 1,
+        1094: 4,
+        1121: 4,
+        1152: 2,
+        1227: 4,
+        1231: 2,
+        1182: 2,
+        1184: 1,
+        1213: 1,
+        1261: 4,
+        1097: 1,
+        1080: 1,
+        1: 14,
+    },
+}
+DEFAULT_DECK = "dragapult"
+DECK = DECKS[os.environ.get("PTCG_DECK", DEFAULT_DECK)]
+
+
+def deck_ids(name: str) -> list[int]:
+    return [card_id for card_id, count in DECKS[name].items() for _ in range(count)]
 
 
 def prepare() -> None:
