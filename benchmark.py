@@ -1,6 +1,8 @@
 import argparse
 import json
 import random
+import subprocess
+import sys
 import time
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
@@ -13,6 +15,19 @@ from engine import SOURCE, Battle, battle_finish, battle_select, battle_start
 from main import ATTACKS, POLICY, SEARCHER
 from schema import Observation
 
+ROOT = Path(__file__).resolve().parent
+MAIN_ROOT = ROOT.parent / "pokemon-agent-main"
+MAIN_RUNNER = """
+import json, sys
+sys.path.insert(0, sys.argv[1])
+stdout, sys.stdout = sys.stdout, sys.stderr
+import main
+sys.stdout = stdout
+for line in sys.stdin:
+    sys.stdout.write(json.dumps(main.agent(json.loads(line))) + "\\n")
+    sys.stdout.flush()
+"""
+
 
 @dataclass
 class GameResult:
@@ -24,6 +39,49 @@ class GameResult:
     max_decision_ms: float
     seconds: float
     contexts: list[int]
+    lethal_calls: int = 0
+    lethal_fired: int = 0
+    threats: int = 0
+    threats_found: int = 0
+
+
+class MainAgent:
+    """The unmodified `main` branch agent, run from a git worktree in its own process."""
+
+    def __init__(self, root: Path) -> None:
+        if not (root / "main.py").exists() or not (root / "deck.csv").exists():
+            raise FileNotFoundError(
+                f"{root} must hold a checkout of main with cards.json and deck.csv: "
+                f"git worktree add {root} main && cp cards.json deck.csv {root}/"
+            )
+        self.process = subprocess.Popen(
+            [sys.executable, "-W", "ignore", "-c", MAIN_RUNNER, str(root)],
+            cwd=root,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+
+    def act(self, observation: Observation) -> list[int]:
+        if self.process.stdin is None or self.process.stdout is None:
+            raise RuntimeError("main agent process has no pipes")
+        self.process.stdin.write(json.dumps(observation) + "\n")
+        self.process.stdin.flush()
+        line = self.process.stdout.readline()
+        if not line:
+            raise RuntimeError("main agent process exited")
+        return [int(index) for index in json.loads(line)]
+
+
+_MAIN_AGENT: MainAgent | None = None
+
+
+def main_agent(root: Path) -> MainAgent:
+    global _MAIN_AGENT
+    if _MAIN_AGENT is None:
+        _MAIN_AGENT = MainAgent(root)
+    return _MAIN_AGENT
 
 
 def opponent_action(observation: Observation, kind: str, rng: random.Random) -> list[int]:
@@ -50,17 +108,25 @@ def opponent_action(observation: Observation, kind: str, rng: random.Random) -> 
 
 
 def play_game(
-    job: tuple[str, int, int], trace_path: Path | None = None, search: bool = False
+    job: tuple[str, int, int],
+    trace_path: Path | None = None,
+    search: bool = False,
+    main_root: Path = MAIN_ROOT,
 ) -> GameResult:
     opponent, seat, seed = job
     rng = random.Random(seed)
     started = time.perf_counter()
-    observation, start = battle_start(POLICY.deck, POLICY.deck)
+    decks = [POLICY.deck, POLICY.deck]
+    if opponent == "main":
+        decks[1 - seat] = main_agent(main_root).act({"select": None, "current": None})
+    observation, start = battle_start(decks[0], decks[1])
     if start.errorPlayer >= 0:
         raise ValueError(f"Native deck error: {start.errorPlayer}/{start.errorType}")
     contexts: set[int] = set()
     maximum = 0.0
     trace: list[dict[str, object]] = []
+    stats = SEARCHER.solver.stats
+    before = (stats.calls, stats.fired, stats.threats, stats.threats_found)
     try:
         for step in range(10000):
             obs = cast(Observation, observation)
@@ -77,6 +143,10 @@ def play_game(
                     maximum,
                     time.perf_counter() - started,
                     sorted(contexts),
+                    stats.calls - before[0],
+                    stats.fired - before[1],
+                    stats.threats - before[2],
+                    stats.threats_found - before[3],
                 )
             if selection is None:
                 raise ValueError("Missing live selection")
@@ -88,6 +158,8 @@ def play_game(
             elif current["yourIndex"] == seat or opponent == "self":
                 action = POLICY.choose(obs)
                 maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
+            elif opponent == "main":
+                action = main_agent(main_root).act(obs)
             else:
                 action = opponent_action(obs, opponent, rng)
             if trace_path:
@@ -133,6 +205,10 @@ def summary(results: list[GameResult]) -> dict[str, object]:
             "max_decision_ms": max(result.max_decision_ms for result in group),
             "mean_turns": sum(result.turns for result in group) / n,
             "seats": dict(Counter(result.baseline_seat for result in group)),
+            "lethal_calls": sum(result.lethal_calls for result in group),
+            "lethal_fired": sum(result.lethal_fired for result in group),
+            "threat_checks": sum(result.threats for result in group),
+            "threats_found": sum(result.threats_found for result in group),
         }
     return groups
 
@@ -144,20 +220,23 @@ def main() -> None:
     parser.add_argument(
         "--opponents",
         nargs="+",
-        choices=["first", "random", "greedy", "self"],
+        choices=["first", "random", "greedy", "self", "main"],
         default=["first", "random", "greedy", "self"],
+        help="`main` is the unmodified main-branch agent loaded from --main-root",
     )
     parser.add_argument("--output", type=Path, default=Path("results/benchmark.json"))
     parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
+    parser.add_argument("--main-root", type=Path, default=MAIN_ROOT)
     args = parser.parse_args()
     if args.games < 1 or args.workers < 1:
         parser.error("games and workers must be positive")
     jobs = [(name, i % 2, i) for name in args.opponents for i in range(args.games)]
+    play = partial(play_game, search=args.search, main_root=args.main_root)
     if args.workers == 1:
-        results = [play_game(job, search=args.search) for job in jobs]
+        results = [play(job) for job in jobs]
     else:
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            results = list(executor.map(partial(play_game, search=args.search), jobs))
+            results = list(executor.map(play, jobs))
     report = {
         "engine": SOURCE,
         "search": args.search,

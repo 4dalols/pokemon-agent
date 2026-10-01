@@ -5,6 +5,11 @@ prizes and hand) are sampled; each candidate option is then played through the n
 simulator with the heuristic policy acting for both sides until the opponent's next
 turn ends. Candidates are ranked by the averaged outcome; the heuristic ranking is the
 fallback whenever no native engine is importable or the time budget is spent.
+
+When the game can end this turn, the exact `LethalSolver` runs first on the same
+determinizations and its answer wins over the rollouts. Inside each rollout the same
+solver checks whether the opponent has a forced win in their reply, which counts as a
+loss for the candidate.
 """
 
 import ctypes
@@ -13,18 +18,14 @@ import json
 import random
 import time
 from collections import Counter
-from typing import TypedDict, cast
+from typing import cast
 
+from lethal import LethalSolver
 from policy import Policy
-from schema import Current, Observation, Player
+from schema import Current, Observation, Player, SearchState
 
 TERMINAL = 10_000.0
 STEP_LIMIT = 400
-
-
-class SearchState(TypedDict):
-    observation: Observation
-    searchId: int
 
 
 def load_engine() -> ctypes.CDLL | None:
@@ -71,6 +72,9 @@ class Searcher:
         budget: float = 1.5,
         candidates: int = 6,
         seed: int | None = None,
+        lethal_budget: float = 0.5,
+        lethal_determinizations: int = 4,
+        threat_check: bool = True,
     ) -> None:
         self.policy = policy
         self.engine = engine
@@ -80,6 +84,10 @@ class Searcher:
         self.agent = engine.AgentStart() if engine is not None else None
         self.calls = 0
         self.samples = 0
+        self.lethal_budget = lethal_budget
+        self.lethal_determinizations = lethal_determinizations
+        self.threat_check = threat_check
+        self.solver = LethalSolver(policy, self, determinizations=lethal_determinizations)
         self.deck_pool = Counter(policy.deck)
         self.basic_energy = {
             card["energyType"]: card["cardId"]
@@ -110,23 +118,47 @@ class Searcher:
         budget = self.budget if remaining is None else min(self.budget, (remaining - 100) / 250)
         if budget <= 0.02:
             return fallback
-        ranked = self.policy.rank(self.policy.scores(selection, current))[: self.candidates]
+        started = time.perf_counter()
+        scores = self.policy.scores(selection, current)
+        if self.lethal_budget > 0 and self.solver.can_finish(current, current["yourIndex"]):
+            deadline = started + min(budget / 2, self.lethal_budget)
+            lethal = self.lethal(current, serialized, scores, deadline)
+            if lethal is not None:
+                return [lethal]
+        ranked = self.policy.rank(scores)[: self.candidates]
         if fallback[0] not in ranked:
             ranked.insert(0, fallback[0])
-        return [self.search(current, serialized, ranked, budget)]
+        return [self.search(current, serialized, ranked, started + budget)]
 
-    def search(self, current: Current, serialized: str, ranked: list[int], budget: float) -> int:
+    def lethal(
+        self, current: Current, serialized: str, scores: list[float], deadline: float
+    ) -> int | None:
+        first = [index for index in self.policy.rank(scores) if scores[index] > -100]
+        try:
+            roots: list[SearchState] = []
+            for _ in range(self.lethal_determinizations):
+                root = self.begin(current, serialized, manual_coin=True)
+                if root is None:
+                    break
+                roots.append(root)
+            if not roots or not first:
+                return None
+            hit = self.solver.solve(roots, first, deadline)
+        finally:
+            self.lib.SearchEnd(self.agent)
+        return None if hit is None else hit[0]
+
+    def search(self, current: Current, serialized: str, ranked: list[int], deadline: float) -> int:
         me = current["yourIndex"]
         totals = {index: 0.0 for index in ranked}
         samples = 0
-        started = time.perf_counter()
         try:
-            while time.perf_counter() - started < budget:
+            while time.perf_counter() < deadline:
                 root = self.begin(current, serialized)
                 if root is None:
                     break
                 for index in ranked:
-                    totals[index] += self.rollout(root, [index], me, current["turn"])
+                    totals[index] += self.rollout(root, [index], me, current["turn"], deadline)
                 samples += 1
         finally:
             self.lib.SearchEnd(self.agent)
@@ -136,7 +168,9 @@ class Searcher:
             return ranked[0]
         return max(ranked, key=lambda index: (totals[index], -ranked.index(index)))
 
-    def begin(self, current: Current, serialized: str) -> int | None:
+    def begin(
+        self, current: Current, serialized: str, manual_coin: bool = False
+    ) -> SearchState | None:
         me = current["yourIndex"]
         mine, theirs = current["players"][me], current["players"][1 - me]
         own_unseen = list((self.deck_pool - Counter(self.seen(mine))).elements())
@@ -161,18 +195,21 @@ class Searcher:
             ints(enemy[:enemy_prizes]),
             ints(enemy[enemy_prizes : enemy_prizes + enemy_hand]),
             ints([]),
-            0,
+            int(manual_coin),
         )
         result = json.loads(raw)
         if result["error"] != 0:
             return None
-        return int(result["state"]["searchId"])
+        return cast(SearchState, result["state"])
 
-    def rollout(self, root: int, first: list[int], me: int, start_turn: int) -> float:
-        state = self.step(root, first)
+    def rollout(
+        self, root: SearchState, first: list[int], me: int, start_turn: int, deadline: float
+    ) -> float:
+        state = self.step(root["searchId"], first)
         if state is None:
             return -TERMINAL
         observation = state["observation"]
+        checked = False
         for _ in range(STEP_LIMIT):
             current = observation["current"]
             selection = observation["select"]
@@ -180,6 +217,17 @@ class Searcher:
                 break
             if current["yourIndex"] == me and current["turn"] >= start_turn + 2:
                 break
+            if (
+                self.threat_check
+                and not checked
+                and current["yourIndex"] != me
+                and selection["type"] == 0
+                and self.solver.can_finish(current, 1 - me)
+            ):
+                checked = True
+                threat = self.solver.threat(state, min(deadline, time.perf_counter() + 0.05))
+                if threat > 0:
+                    return -TERMINAL * threat
             state = self.step(state["searchId"], self.policy.choose(observation))
             if state is None:
                 return -TERMINAL
@@ -192,6 +240,9 @@ class Searcher:
         if result["error"] != 0:
             return None
         return cast(SearchState, result["state"])
+
+    def release(self, search_id: int) -> None:
+        self.lib.SearchRelease(self.agent, search_id)
 
     def evaluate(self, observation: Observation, me: int) -> float:
         current = observation["current"]

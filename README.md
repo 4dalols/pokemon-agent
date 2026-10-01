@@ -38,7 +38,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python prepare_assets.py
 .venv/bin/ruff check .
-.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py prepare_assets.py benchmark.py package.py tests
+.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py lethal.py prepare_assets.py benchmark.py package.py tests
 .venv/bin/pytest -q
 .venv/bin/python benchmark.py --games 100 --workers 4 --output results/benchmark.json
 .venv/bin/python package.py
@@ -92,6 +92,30 @@ answer is used whenever the budget is spent or the engine rejects a prediction.
 `benchmark.py --search` plays the search agent against the heuristic opponents; the
 test suite runs with a 0.1 s budget (`tests/conftest.py`).
 
+## Exact lethal solver
+
+`lethal.py` runs in front of the rollouts whenever the game can plausibly end this
+turn: we are on our last prize(s) relative to the defending Pokémon's prize value, the
+opponent has no bench, or the opponent's deck is empty (`LethalSolver.can_finish`).
+Our hand and board are known, so the turn is enumerated exactly on the same native
+search API: `PTCG_LETHAL_DETERMINIZATIONS` (default 4) determinizations of our deck
+order and the opponent's hidden cards are opened with `manualCoin`, so each coin flip
+arrives as a Yes/No prompt whose branches are averaged instead of sampled. The
+current turn's action tree is searched depth-first (End Turn is only tried when the
+opponent is decked out), transpositions are pruned on the resulting public state, and
+each root option is scored by P(win this turn). The first action of the best line is
+played when that probability is at least 0.5; otherwise the rollouts run as before.
+The solver is capped at 3000 nodes per determinization and at
+`min(PTCG_LETHAL_BUDGET, budget / 2)` seconds (default 0.5 s), so the whole decision
+still fits the rollout budget.
+
+The mirror image is a one-ply opponent lethal check inside every rollout: when the
+opponent's first main-phase prompt of their reply is one where they could finish us,
+the same solver (300 nodes, 50 ms) computes P(they win this turn) and the candidate is
+scored `-TERMINAL * P` instead of continuing the rollout (`PTCG_THREAT_CHECK=0`
+disables it). `benchmark.py` reports solver calls/fires and threat checks/hits per
+opponent.
+
 ## Benchmarks and replay inspection
 
 `benchmark.py` validates selection counts and indices before every native action.
@@ -104,6 +128,10 @@ being hidden as losses. Seats alternate. The default opponents use the same deck
   highest printed base damage. It avoids voluntary retreat and Abilities.
 - `self`: the same baseline on both sides; its assigned-seat win rate is a symmetry
   check, not a measure of strength against a different agent.
+- `main`: the unmodified `main` branch agent with its full default budget, run in a
+  subprocess from a git worktree (`--main-root`, default `../pokemon-agent-main`):
+  `git worktree add ../pokemon-agent-main main && cp cards.json deck.csv ../pokemon-agent-main/`.
+  Use it with `--search` to measure a candidate change against the current baseline.
 
 Parallel games run in separate processes because the native battle is process-global.
 The native API exposes no seed parameter. Python seeds control only the random

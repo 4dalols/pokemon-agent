@@ -74,6 +74,11 @@ class Observation(TypedDict):
     remainingOverageTime: NotRequired[float]
 
 
+class SearchState(TypedDict):
+    observation: Observation
+    searchId: int
+
+
 class Skill(TypedDict):
     name: str
     text: str

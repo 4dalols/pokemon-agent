@@ -12,6 +12,9 @@ SEARCHER = Searcher(
     load_engine(),
     budget=float(os.environ.get("PTCG_SEARCH_BUDGET", "1.5")),
     candidates=int(os.environ.get("PTCG_SEARCH_CANDIDATES", "6")),
+    lethal_budget=float(os.environ.get("PTCG_LETHAL_BUDGET", "0.5")),
+    lethal_determinizations=int(os.environ.get("PTCG_LETHAL_DETERMINIZATIONS", "4")),
+    threat_check=os.environ.get("PTCG_THREAT_CHECK", "1") != "0",
 )
 
 
