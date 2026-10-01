@@ -27,6 +27,8 @@ COIN_HEAD = 3
 TO_HAND = 7
 END_TURN = 14
 StateKey = tuple[object, ...]
+Step = tuple[int, int, list[int]]
+"""(selection type, option count, choice) of one prompt along a solved line."""
 
 
 class SearchTree(Protocol):
@@ -62,10 +64,10 @@ class LethalSolver:
         policy: Policy,
         tree: SearchTree,
         determinizations: int = 4,
-        node_cap: int = 3000,
+        node_cap: int = 2000,
         threat_node_cap: int = 300,
         alternatives: int = 4,
-        threshold: float = 0.5,
+        threshold: float = 1.0,
     ) -> None:
         self.policy = policy
         self.tree = tree
@@ -75,6 +77,7 @@ class LethalSolver:
         self.alternatives = alternatives
         self.threshold = threshold
         self.stats = SolverStats()
+        self.plan: list[Step] = []
 
     def prize_value(self, card: Card | None) -> int:
         if card is None or card["id"] not in self.policy.cards:
@@ -82,7 +85,7 @@ class LethalSolver:
         data = self.policy.cards[card["id"]]
         return 3 if data["megaEx"] else 2 if data["ex"] else 1
 
-    def can_finish(self, current: Current, player: int) -> bool:
+    def can_finish(self, current: Current, player: int, lone_active: bool = True) -> bool:
         """Can `player` plausibly end the game this turn (last prizes, lone active, deck-out)?"""
         mine, theirs = current["players"][player], current["players"][1 - player]
         if theirs["deckCount"] == 0:
@@ -90,7 +93,7 @@ class LethalSolver:
         defending = theirs["active"][0] if theirs["active"] else None
         if defending is None:
             return False
-        if not any(card is not None for card in theirs["bench"]):
+        if lone_active and not any(card is not None for card in theirs["bench"]):
             return True
         return len(mine["prize"]) <= self.prize_value(defending)
 
@@ -100,19 +103,25 @@ class LethalSolver:
         """Return (option index, P(win this turn)) for the best opening action.
 
         `roots` holds one search node per determinization of the same live selection;
-        `first` lists the root option indices worth trying, best heuristic first.
+        `first` lists the root option indices worth trying, best heuristic first. When a
+        line fires, `self.plan` holds the follow-up prompts of that line (up to the first
+        coin flip) so the caller can replay the exact sequence instead of re-deciding
+        intermediate prompts heuristically.
         """
         started = time.perf_counter()
         self.stats.calls += 1
+        self.plan = []
         wins = {index: 0.0 for index in first}
         completed = 0
+        solved: SearchState | None = None
+        seen: dict[StateKey, float] = {}
         for root in roots:
             current = root["observation"]["current"]
             if current is None or time.perf_counter() >= deadline:
                 break
             budget = Budget(deadline, self.node_cap)
             me = current["yourIndex"]
-            seen: dict[StateKey, float] = {}
+            seen = {}
             for index in first:
                 budget.nodes += 1
                 child = self.tree.step(root["searchId"], [index])
@@ -123,19 +132,79 @@ class LethalSolver:
                 if budget.spent():
                     break
             self.stats.nodes += budget.nodes
-            if budget.spent() and max(wins.values()) < completed + 1:
-                break
             completed += 1
-        self.stats.seconds += time.perf_counter() - started
-        if completed == 0:
+            solved = root
+            if max(wins.values()) <= 0 or (budget.spent() and max(wins.values()) < completed):
+                break
+        if completed == 0 or solved is None:
+            self.stats.seconds += time.perf_counter() - started
             return None
         best = max(first, key=lambda index: (wins[index], -first.index(index)))
         probability = wins[best] / completed
         self.stats.probabilities.append(probability)
         if probability < self.threshold or wins[best] <= 0:
+            self.stats.seconds += time.perf_counter() - started
             return None
         self.stats.fired += 1
+        current = solved["observation"]["current"]
+        if current is not None:
+            child = self.tree.step(solved["searchId"], [best])
+            if child is not None:
+                budget = Budget(deadline, self.node_cap)
+                self.plan = self.line(child, current["yourIndex"], current["turn"], budget, seen)
+                self.stats.nodes += budget.nodes
+                self.tree.release(child["searchId"])
+        self.stats.seconds += time.perf_counter() - started
         return best, probability
+
+    def line(
+        self,
+        node: SearchState,
+        me: int,
+        turn: int,
+        budget: Budget,
+        seen: dict[StateKey, float],
+    ) -> list[Step]:
+        """Follow the best child at each of our prompts until a coin flip or the turn ends."""
+        steps: list[Step] = []
+        owned: SearchState | None = None
+        while True:
+            observation = node["observation"]
+            current, selection = observation["current"], observation["select"]
+            if (
+                current is None
+                or selection is None
+                or current["result"] >= 0
+                or current["turn"] != turn
+                or current["yourIndex"] != me
+                or (selection["type"] == YES_NO and selection["context"] == COIN_HEAD)
+                or budget.spent()
+            ):
+                break
+            best, best_child, best_choice = 0.0, None, None
+            for choice in self.choices(observation, selection, current):
+                budget.nodes += 1
+                child = self.tree.step(node["searchId"], choice)
+                if child is None:
+                    continue
+                found = self.win_probability(child, me, turn, budget, seen)
+                if found > best:
+                    if best_child is not None:
+                        self.tree.release(best_child["searchId"])
+                    best, best_child, best_choice = found, child, choice
+                else:
+                    self.tree.release(child["searchId"])
+                if best >= 1.0 or budget.spent():
+                    break
+            if best_child is None or best_choice is None:
+                break
+            steps.append((selection["type"], len(selection["option"]), best_choice))
+            if owned is not None:
+                self.tree.release(owned["searchId"])
+            owned = node = best_child
+        if owned is not None:
+            self.tree.release(owned["searchId"])
+        return steps
 
     def threat(self, node: SearchState, deadline: float) -> float:
         """P(the player about to act wins before this turn ends), under a small node cap."""
@@ -222,11 +291,15 @@ class LethalSolver:
         if selection["type"] == EVOLVE:
             return [[index] for index in ranked[: self.alternatives]]
         if selection["maxCount"] == 1 and selection["minCount"] <= 1:
-            seen_cards: set[tuple[int, int]] = set()
+            seen_cards: set[tuple[object, ...]] = set()
             picks = []
             for index in ranked:
                 card = self.policy.resolve(options[index], selection, current)
-                mark = (card["id"], options[index].get("area", 0)) if card else (-index, 0)
+                mark = (
+                    (card_key(card), options[index].get("area"), options[index].get("playerIndex"))
+                    if card
+                    else (-index,)
+                )
                 if mark in seen_cards:
                     continue
                 seen_cards.add(mark)

@@ -58,17 +58,19 @@ def selection(kind: int, context: int, types: list[int]) -> Selection:
 
 MAIN = selection(0, 0, [0, 0, END_TURN])
 COIN = selection(9, 3, [1, 2])
+PICK = selection(1, 0, [0, 0])
+PICK["option"][1]["index"] = 1
 
 
 class FakeTree:
     """Scripted search tree: node 0 is the live main selection of player 0 on turn 5.
 
     option 0 -> coin flip: heads wins, tails ends the turn
-    option 1 -> the opponent wins
+    option 1 -> the opponent wins (or, with `deep`, a follow-up pick: [0] loses, [1] wins)
     option 2 (End) -> wins only when the opponent is decked out, else the turn ends
     """
 
-    def __init__(self, enemy_deck: int = 30) -> None:
+    def __init__(self, enemy_deck: int = 30, deep: bool = False) -> None:
         end = current(result=0) if enemy_deck == 0 else current(turn=6)
         self.nodes: dict[int, Observation] = {
             0: {"select": MAIN, "current": current(enemy_deck=enemy_deck)},
@@ -77,12 +79,15 @@ class FakeTree:
             3: {"select": None, "current": current(turn=6)},
             4: {"select": None, "current": current(result=1)},
             5: {"select": None, "current": end},
+            6: {"select": PICK, "current": current()},
         }
         self.edges: dict[tuple[int, tuple[int, ...]], int] = {
             (0, (0,)): 1,
             (1, (0,)): 2,
             (1, (1,)): 3,
-            (0, (1,)): 4,
+            (0, (1,)): 6 if deep else 4,
+            (6, (0,)): 4,
+            (6, (1,)): 2,
             (0, (2,)): 5,
         }
         self.steps = 0
@@ -105,12 +110,14 @@ class FakeTree:
 
 def test_coin_flips_are_averaged_and_threshold_applies() -> None:
     tree = FakeTree()
-    solver = LethalSolver(POLICY, tree)
+    solver = LethalSolver(POLICY, tree, threshold=0.5)
     assert solver.solve([tree.root()], [0, 1, 2], deadline=float("inf")) == (0, 0.5)
     assert solver.stats.fired == 1 and solver.stats.calls == 1
     assert solver.stats.probabilities == [0.5]
+    assert solver.plan == [], "a line that starts with a coin flip has no replayable prompts"
     assert tree.live == set(), "every explored node must be released"
-    strict = LethalSolver(POLICY, FakeTree(), threshold=0.6)
+    strict = LethalSolver(POLICY, FakeTree())
+    assert strict.threshold == 1.0
     assert strict.solve([tree.root()], [0, 1, 2], deadline=float("inf")) is None
 
 
@@ -118,8 +125,30 @@ def test_end_turn_is_tried_when_opponent_is_decked_out() -> None:
     tree = FakeTree(enemy_deck=0)
     solver = LethalSolver(POLICY, tree)
     assert solver.solve([tree.root()], [0, 1, 2], deadline=float("inf")) == (2, 1.0)
-    without = LethalSolver(POLICY, FakeTree())
+    without = LethalSolver(POLICY, FakeTree(), threshold=0.5)
     assert without.solve([FakeTree().root()], [0, 2], deadline=float("inf")) == (0, 0.5)
+
+
+def test_solved_line_is_recorded_and_replayed_for_follow_up_prompts() -> None:
+    tree = FakeTree(deep=True)
+    solver = LethalSolver(POLICY, tree)
+    assert solver.solve([tree.root()], [0, 1, 2], deadline=float("inf")) == (1, 1.0)
+    assert solver.plan == [(1, 2, [1])]
+    assert tree.live == set()
+    searcher = Searcher(POLICY, None)
+    searcher.plan, searcher.plan_turn = list(solver.plan), 5
+    assert searcher.choose({"select": PICK, "current": current()}) == [1]
+    assert searcher.plan == []
+    searcher.plan, searcher.plan_turn = list(solver.plan), 5
+    assert searcher.choose({"select": PICK, "current": current(turn=6)}) == POLICY.choose(
+        {"select": PICK, "current": current(turn=6)}
+    ), "a stale plan from an earlier turn is dropped"
+    assert searcher.plan == []
+    searcher.plan, searcher.plan_turn = [(1, 3, [1])], 5
+    assert searcher.choose({"select": PICK, "current": current()}) == POLICY.choose(
+        {"select": PICK, "current": current()}
+    ), "a prompt that no longer matches the solved line is dropped"
+    assert searcher.plan == []
 
 
 def test_threat_reports_opponent_win_probability_and_node_cap() -> None:
