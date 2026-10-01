@@ -38,7 +38,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python prepare_assets.py
 .venv/bin/ruff check .
-.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py prepare_assets.py benchmark.py package.py tests
+.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py memory.py archetypes.py prediction.py prepare_assets.py benchmark.py package.py tests
 .venv/bin/pytest -q
 .venv/bin/python benchmark.py --games 100 --workers 4 --output results/benchmark.json
 .venv/bin/python package.py
@@ -92,11 +92,28 @@ answer is used whenever the budget is spent or the engine rejects a prediction.
 `benchmark.py --search` plays the search agent against the heuristic opponents; the
 test suite runs with a 0.1 s budget (`tests/conftest.py`).
 
+`memory.Tracker` keeps per-game memory from the incremental `observation["logs"]`
+(reset whenever `round` changes or `turn` goes backwards): opponent card identities
+by serial with per-zone probabilities, our exact deck and prizes once a full-deck
+search has shown the whole deck, attacks, damage, coin flips and energy attachments.
+`archetypes.Predictor` holds a library of 60-card lists (the top Playground
+Dragapult ex list first, then lists reconstructed from public replays, plus a mirror
+of our own deck) and weights them by how many revealed opponent cards each list
+fails to explain; `search.Searcher.begin` samples the opponent's hidden deck, hand
+and prizes from that mixture and uses our exact prizes when known, falling back to
+the uniform pool whenever logs are missing or inconsistent. `Tracker.threat` feeds
+the heuristics (bench size against bench snipers, keeping Pokémon within revealed
+damage range out of the active spot, preferring attackers that hit weakness).
+`prediction.py` reports the log-likelihood of the opponent's actual draws under the
+old uniform predictor and the tracked mixture.
+
 ## Benchmarks and replay inspection
 
 `benchmark.py` validates selection counts and indices before every native action.
 Native rejections and games exceeding 10,000 decisions raise errors rather than
-being hidden as losses. Seats alternate. The default opponents use the same deck:
+being hidden as losses. Seats alternate. `--opponents main` plays the unmodified
+`main` branch loaded from a git worktree (`--main-worktree`, default
+`../pokemon-main`, or `PTCG_MAIN_WORKTREE`). The default opponents use the same deck:
 
 - `first`: take the first legal options.
 - `random`: choose random legal option positions.
