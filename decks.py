@@ -163,7 +163,7 @@ DECKS: dict[str, dict[int, int]] = {
     },
 }
 
-DEFAULT_DECK = "abomasnow"
+DEFAULT_DECK = "kangaskhan"
 
 
 def deck_list(name: str) -> list[int]:

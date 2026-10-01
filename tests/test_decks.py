@@ -103,12 +103,12 @@ def test_agent_for_builds_a_full_searcher_per_deck() -> None:
 
     assert agent_for(None) == (POLICY, SEARCHER)
     assert agent_for(sorted(POLICY.deck)) == (POLICY, SEARCHER)
-    policy, searcher = agent_for(deck_list("kangaskhan"))
-    assert policy is not POLICY and sorted(policy.deck) == sorted(deck_list("kangaskhan"))
+    policy, searcher = agent_for(deck_list("lucario"))
+    assert policy is not POLICY and sorted(policy.deck) == sorted(deck_list("lucario"))
     assert searcher.policy is policy and searcher.budget == SEARCHER.budget
     assert searcher.model is SEARCHER.model
     assert searcher.tracker is not None and searcher.tracker is not SEARCHER.tracker
-    assert agent_for(deck_list("kangaskhan")) == (policy, searcher)
+    assert agent_for(deck_list("lucario")) == (policy, searcher)
 
 
 def test_field_pilots_are_separate_from_the_measured_agent() -> None:

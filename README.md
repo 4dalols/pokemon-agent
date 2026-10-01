@@ -120,10 +120,13 @@ prize values, zone sizes, special conditions) so the same model serves any deck:
   --report results/value_report.json
 ```
 
-`--deck <name>` trains for a `decks.py` candidate instead of `deck.csv`. Weight files
-for the other candidates and earlier models live under `models/` (not packaged);
-`PTCG_VALUE_MODEL=<path>` makes the agent load one of them (e.g. to benchmark an
-older model) and `PTCG_VALUE_MODEL=0` disables the model.
+`--deck <name>` trains for a `decks.py` candidate instead of `deck.csv`. The shipped
+`value.json` is the `kangaskhan` model trained against the panel; weight files for the
+other candidates and earlier models live under `models/` (not packaged):
+`value_mirror_abomasnow.json` (Abomasnow mirror self-play only),
+`value_mixed_abomasnow.json` and `value_mixed_abomasnow_pr11.json` (Abomasnow vs the
+panel, two training runs). `PTCG_VALUE_MODEL=<path>` makes the agent load one of them
+(e.g. to benchmark an older model) and `PTCG_VALUE_MODEL=0` disables the model.
 
 The engine is taken from `kaggle_environments.envs.cabt.cg.sim` (present in the
 Kaggle runtime), falling back to a `cg` package on `sys.path`; without either the

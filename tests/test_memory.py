@@ -5,6 +5,7 @@ from typing import cast
 
 from archetypes import LIBRARY, Predictor
 from benchmark import opponent_action
+from decks import deck_list
 from engine import Battle, battle_finish, battle_select, battle_start
 from main import ATTACKS, CARDS, POLICY
 from memory import DECK, HAND, PRIZE, Threat, Tracker
@@ -82,7 +83,7 @@ def test_hidden_moves_spread_known_identities_across_zones() -> None:
 
 
 def test_predictor_identifies_dragapult_and_samples_legal_zone_sizes() -> None:
-    predictor = Predictor(POLICY.deck, CARDS, random.Random(3))
+    predictor = Predictor(deck_list("abomasnow"), CARDS, random.Random(3))
     revealed = Counter({119: 2, 120: 1, 121: 1, 1086: 1})
     posterior = predictor.posterior(revealed)
     assert max(posterior, key=posterior.__getitem__) == "dragapult-ex-top"
