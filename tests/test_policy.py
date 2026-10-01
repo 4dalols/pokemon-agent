@@ -5,8 +5,10 @@ from kaggle_environments import make
 
 from assets import ROOT, validate_deck
 from benchmark import play_game
+from decks import deck_list
 from engine import Battle, battle_finish, battle_start
 from main import ATTACKS, CARDS, POLICY, agent
+from policy import Policy
 from schema import Current, Observation, Selection
 
 
@@ -108,7 +110,8 @@ def test_prepare_a_backup_before_a_nonwinning_attack(current: Current) -> None:
         {"type": 13, "attackId": attack},
         {"type": 8, "area": 2, "index": 0, "inPlayArea": 5, "inPlayIndex": 0},
     ]
-    assert agent({"select": prompt, "current": current}) == [1]
+    policy = Policy(deck_list("abomasnow"), CARDS, ATTACKS)
+    assert policy.choose({"select": prompt, "current": current}) == [1]
 
 
 def test_guaranteed_final_prize_knockout_beats_optional_preparation(current: Current) -> None:
