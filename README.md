@@ -38,7 +38,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python prepare_assets.py
 .venv/bin/ruff check .
-.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py prepare_assets.py benchmark.py package.py decks.py reference.py tests
+.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py prepare_assets.py benchmark.py package.py decks.py reference.py field.py tests
 .venv/bin/pytest -q
 .venv/bin/python benchmark.py --games 100 --workers 4 --output results/benchmark.json
 .venv/bin/python package.py
@@ -54,6 +54,8 @@ cabt battles.
 deck. Candidate deck lists live in `decks.py`; `--deck <name>` selects one and
 `DEFAULT_DECK` is what the submission plays. It overwrites `cards.json` and `deck.csv`. The generated files are excluded
 from Git by default. The runtime agent itself uses only Python's standard library.
+At runtime `PTCG_DECK_FILE` names an alternative deck file (relative to the agent
+directory or absolute) to play instead of `deck.csv`.
 
 ## Strategy
 
@@ -115,6 +117,12 @@ being hidden as losses. Seats alternate. The default opponents use the same deck
   worktree at `results/main-ref` (created on demand) in its own interpreter by
   `reference.py`; `--opponent-search` gives it its full search budget.
 - `deck:<name>`: the current code playing another candidate from `decks.py`.
+- `field`: the ladder panel in `field.py` (the most common 60-card list of each
+  archetype seen in public Playground replays, with its number of entries). Games are
+  allocated to archetypes in proportion to entries, each piloted by the same policy
+  with the same search setting as our seat. The summary adds a `field` entry with the
+  pooled W-L, Wilson 95% interval and the entry-weighted win rate next to the
+  per-archetype `field:<slug>` groups. `field:<slug>` is also accepted directly.
 
 `--deck <name>` makes the benchmarked agent play a candidate deck instead of the one in
 `deck.csv`, so candidates can be round-robined against each other and against `main`.
