@@ -22,6 +22,11 @@ class Player(TypedDict):
     deckCount: int
     handCount: int
     benchMax: int
+    poisoned: NotRequired[bool]
+    burned: NotRequired[bool]
+    asleep: NotRequired[bool]
+    paralyzed: NotRequired[bool]
+    confused: NotRequired[bool]
 
 
 class Current(TypedDict):
@@ -34,6 +39,7 @@ class Current(TypedDict):
     looking: list[Card | None] | None
     energyAttached: bool
     supporterPlayed: bool
+    firstPlayer: NotRequired[int]
     win: NotRequired[int]
     draw: NotRequired[int]
     round: NotRequired[int]
@@ -67,9 +73,24 @@ class Selection(TypedDict):
     effect: Card | None
 
 
+class LogEntry(TypedDict, total=False):
+    type: int
+    playerIndex: int
+    cardId: int
+    serial: int
+    cardIdTarget: int
+    serialTarget: int
+    fromArea: int
+    toArea: int
+    attackId: int
+    value: int
+    head: bool
+
+
 class Observation(TypedDict):
     select: Selection | None
     current: Current | None
+    logs: NotRequired[list[LogEntry] | None]
     search_begin_input: NotRequired[str | None]
     remainingOverageTime: NotRequired[float]
 
@@ -105,6 +126,11 @@ class AttackData(TypedDict):
     text: str
     damage: int
     energies: list[int]
+
+
+class PanelEntry(TypedDict):
+    entries: int
+    cards: dict[str, int]
 
 
 class Catalog(TypedDict):

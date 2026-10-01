@@ -5,7 +5,19 @@ from pathlib import Path
 from assets import load_catalog, load_deck
 
 ROOT = Path(__file__).resolve().parent
-FILES = ("main.py", "policy.py", "schema.py", "search.py", "assets.py", "cards.json", "deck.csv")
+FILES = (
+    "main.py",
+    "policy.py",
+    "schema.py",
+    "search.py",
+    "value.py",
+    "memory.py",
+    "archetypes.py",
+    "assets.py",
+    "cards.json",
+    "deck.csv",
+    "value.json",
+)
 
 
 def package(output: Path) -> None:
