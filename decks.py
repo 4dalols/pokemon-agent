@@ -1,0 +1,170 @@
+"""Candidate 60-card decks keyed by archetype name (card ID -> copies)."""
+
+DECKS: dict[str, dict[int, int]] = {
+    # Current main deck: Mega Abomasnow ex / Kyogre Water deck.
+    "abomasnow": {
+        721: 2,
+        722: 4,
+        723: 4,
+        1092: 1,
+        1121: 2,
+        1145: 2,
+        1163: 2,
+        1219: 4,
+        1227: 4,
+        1262: 2,
+        3: 33,
+    },
+    # Big-HP Basic ex Metal deck: Zacian ex self-accelerates with Steel Armament, Registeel ex
+    # recovers Energy from the discard pile, Cobalion ex is a second heavy hitter.
+    "abomasnow_v2": {
+        721: 2,
+        722: 4,
+        723: 4,
+        1092: 1,
+        1121: 2,
+        1145: 2,
+        1163: 2,
+        1219: 2,
+        1227: 4,
+        1182: 2,
+        1097: 2,
+        3: 33,
+    },
+    "zacian": {
+        336: 4,
+        1334: 3,
+        988: 2,
+        1227: 4,
+        1224: 4,
+        1219: 2,
+        1182: 2,
+        1121: 4,
+        1097: 3,
+        1118: 3,
+        1123: 4,
+        1119: 2,
+        1122: 2,
+        1159: 1,
+        1174: 2,
+        8: 18,
+    },
+    # Trainer-heavy consistency variant of the Zacian deck with a leaner Energy count.
+    "zacian_lean": {
+        336: 4,
+        1334: 3,
+        988: 2,
+        1227: 4,
+        1224: 4,
+        1219: 4,
+        1182: 2,
+        1121: 4,
+        1097: 3,
+        1118: 3,
+        1119: 3,
+        1123: 3,
+        1122: 2,
+        1159: 1,
+        1174: 2,
+        8: 16,
+    },
+    # Metal evolution deck: Duraludon -> Archaludon ex (Assemble Alloy accelerates from the
+    # discard pile), Genesect ex searches the evolutions, Hilda finds evolution + Energy.
+    "archaludon": {
+        169: 4,
+        190: 3,
+        170: 1,
+        547: 2,
+        336: 1,
+        988: 1,
+        1227: 4,
+        1224: 4,
+        1219: 2,
+        1182: 2,
+        1121: 4,
+        1097: 2,
+        1118: 2,
+        1123: 3,
+        1225: 2,
+        1159: 1,
+        1122: 2,
+        1119: 2,
+        1174: 2,
+        8: 16,
+    },
+    # Fighting Mega deck: Riolu -> Mega Lucario ex (Aura Jab re-attaches discarded Energy,
+    # Mega Brave for 270), Drilbur discards Energy on entry, Poffin fills the Bench.
+    "lucario": {
+        974: 4,
+        678: 3,
+        81: 2,
+        1145: 3,
+        1086: 4,
+        1121: 4,
+        1227: 4,
+        1224: 4,
+        1219: 2,
+        1182: 2,
+        1123: 3,
+        1097: 2,
+        1118: 2,
+        1159: 1,
+        1174: 2,
+        1122: 2,
+        6: 16,
+    },
+    "kingambit": {
+        899: 4,
+        900: 2,
+        901: 3,
+        547: 1,
+        1079: 4,
+        1086: 4,
+        1227: 4,
+        1224: 3,
+        1219: 2,
+        1182: 2,
+        1121: 4,
+        1097: 2,
+        1118: 2,
+        1123: 3,
+        1225: 2,
+        1159: 1,
+        1174: 2,
+        1122: 1,
+        8: 14,
+    },
+    # Ladder list: Mega Kangaskhan ex / Cornerstone Mask Ogerpon ex (Crustle, special Energy).
+    "kangaskhan": {
+        1: 1,  # Basic {G} Energy
+        11: 4,  # Mist Energy
+        14: 4,  # Spiky Energy
+        18: 4,  # Grow Grass Energy
+        20: 2,  # Rock Fighting Energy
+        117: 1,  # Cornerstone Mask Ogerpon ex
+        344: 4,  # Dwebble
+        345: 4,  # Crustle
+        756: 2,  # Mega Kangaskhan ex
+        1086: 2,  # Buddy-Buddy Poffin
+        1112: 1,  # Super Potion
+        1121: 2,  # Ultra Ball
+        1122: 4,  # Pokégear 3.0
+        1123: 1,  # Switch
+        1147: 4,  # Jumbo Ice Cream
+        1159: 1,  # Hero’s Cape
+        1182: 4,  # Boss’s Orders
+        1194: 2,  # Colress’s Tenacity
+        1197: 1,  # Xerosic’s Machinations
+        1219: 4,  # Team Rocket's Petrel
+        1225: 2,  # Hilda
+        1227: 4,  # Lillie's Determination
+        1257: 1,  # Team Rocket's Factory
+        1261: 1,  # Forest of Vitality
+    },
+}
+
+DEFAULT_DECK = "abomasnow"
+
+
+def deck_list(name: str) -> list[int]:
+    return [card_id for card_id, count in DECKS[name].items() for _ in range(count)]

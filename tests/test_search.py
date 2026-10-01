@@ -205,3 +205,14 @@ def test_non_main_prompts_are_searched_only_when_enabled() -> None:
     finally:
         battle_finish()
         Battle.battle_ptr = None
+
+
+def test_rollouts_model_the_opponent_with_a_policy_for_their_deck() -> None:
+    searcher = Searcher(POLICY, None)
+    assert searcher.rival_policy(list(POLICY.deck)) is POLICY
+    metal = next(i for i, card in POLICY.cards.items() if card["name"] == "Basic {M} Energy")
+    zacian = next(i for i, card in POLICY.cards.items() if card["name"] == "Zacian ex")
+    rival = searcher.rival_policy([zacian] * 4 + [metal] * 56)
+    assert rival is not POLICY
+    assert rival.energy_type == POLICY.cards[metal]["energyType"] != POLICY.energy_type
+    assert rival.power["Zacian ex"] > 0

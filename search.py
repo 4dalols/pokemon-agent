@@ -2,12 +2,13 @@
 
 At each searchable prompt the hidden cards (own deck order and prizes, the opponent's
 deck, prizes and hand) are sampled; each candidate answer is then played through the
-native simulator with the heuristic policy acting for both sides until the opponent's
-next turn ends. Candidates are ranked by the averaged outcome (terminal results,
-otherwise the learned win probability from `value.py` when weights are loaded,
-otherwise the hand-written prize/board score), with successive halving dropping the
-weakest half of the field at fixed fractions of the time budget. The heuristic answer
-is the fallback whenever no native engine is importable or the time budget is spent.
+native simulator until the opponent's next turn ends, our heuristic policy acting for
+our side and a heuristic built for the opponent's observed plus sampled deck acting for
+theirs. Candidates are ranked by the averaged outcome (terminal results, otherwise the
+learned win probability from `value.py` when weights are loaded, otherwise the
+hand-written prize/board score), with successive halving dropping the weakest half of
+the field at fixed fractions of the time budget. The heuristic answer is the fallback
+whenever no native engine is importable or the time budget is spent.
 """
 
 import ctypes
@@ -28,6 +29,7 @@ from value import Featurizer, ValueModel
 TERMINAL = 10_000.0
 VALUE_SCALE = 1_000.0
 STEP_LIMIT = 400
+RIVAL_CACHE = 256
 MAIN, ENERGY = 0, 4
 
 
@@ -105,6 +107,9 @@ class Searcher:
         self.horizon = horizon
         self.epsilon = epsilon
         self.rng = random.Random(seed)
+        self.rival = policy
+        self.own_key = tuple(sorted(policy.deck))
+        self.rivals: dict[tuple[int, ...], Policy] = {}
         self.agent = engine.AgentStart() if engine is not None else None
         self.calls = 0
         self.samples = 0
@@ -272,8 +277,11 @@ class Searcher:
         """Opponent (deck, hand, prizes) from the archetype mixture, else the old pool."""
         self.prepare(current)
         if self.enemy_sampler is not None:
-            return self.enemy_sampler.sample()
+            deck, hand, prizes = self.enemy_sampler.sample()
+            self.rival = self.rival_policy(self.seen(theirs) + deck + hand + prizes)
+            return deck, hand, prizes
         enemy = list(self.enemy_uniform)
+        self.rival = self.rival_policy(self.seen(theirs) + enemy)
         self.rng.shuffle(enemy)
         enemy_prizes = sum(card is None for card in theirs["prize"])
         enemy_hand = theirs["handCount"]
@@ -321,14 +329,17 @@ class Searcher:
                 break
             if current["yourIndex"] == me and current["turn"] >= start_turn + 2 * self.horizon:
                 break
-            state = self.step(state["searchId"], self.playout_choice(observation, selection))
+            actor = self.policy if current["yourIndex"] == me else self.rival
+            state = self.step(state["searchId"], self.playout_choice(observation, selection, actor))
             if state is None:
                 return -TERMINAL
             observation = state["observation"]
         return self.evaluate(observation, me)
 
-    def playout_choice(self, observation: Observation, selection: Selection) -> list[int]:
-        """Heuristic answer; with probability epsilon a random one of the top three main options."""
+    def playout_choice(
+        self, observation: Observation, selection: Selection, actor: Policy
+    ) -> list[int]:
+        """The actor's heuristic answer; with probability epsilon one of its top three options."""
         if (
             self.epsilon > 0.0
             and selection["type"] == MAIN
@@ -336,9 +347,9 @@ class Searcher:
             and observation["current"] is not None
             and self.rng.random() < self.epsilon
         ):
-            ranked = self.policy.rank(self.policy.scores(selection, observation["current"]))
+            ranked = actor.rank(actor.scores(selection, observation["current"]))
             return [self.rng.choice(ranked[:3])]
-        return self.policy.choose(observation)
+        return actor.choose(observation)
 
     def step(self, search_id: int, select: list[int]) -> SearchState | None:
         raw = self.lib.SearchStep(self.agent, search_id, ints(select), len(select))
@@ -361,8 +372,8 @@ class Searcher:
         mine, theirs = current["players"][me], current["players"][1 - me]
         return (
             300.0 * (len(theirs["prize"]) - len(mine["prize"]))
-            + self.board(theirs) * -1
             + self.board(mine)
+            - self.board(theirs)
         )
 
     @staticmethod
@@ -374,6 +385,18 @@ class Searcher:
             score += 40 + 25 * len(card.get("energies", []))
             score -= 0.6 * (card.get("maxHp", 0) - card.get("hp", 0))
         return score
+
+    def rival_policy(self, deck: list[int]) -> Policy:
+        """Heuristic for the opponent's deck (seen cards plus the sampled hidden ones)."""
+        key = tuple(sorted(deck))
+        if key == self.own_key:
+            return self.policy
+        rival = self.rivals.get(key)
+        if rival is None:
+            if len(self.rivals) >= RIVAL_CACHE:
+                self.rivals.clear()
+            rival = self.rivals[key] = Policy(deck, self.policy.cards, self.policy.attacks)
+        return rival
 
     def enemy_pool(self, theirs: Player) -> list[int]:
         seen = Counter(self.seen(theirs))
