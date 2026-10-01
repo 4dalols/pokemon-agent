@@ -5,11 +5,12 @@ import time
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import cast
 
-from engine import Battle, battle_finish, battle_select, battle_start
-from main import ATTACKS, POLICY
+from engine import SOURCE, Battle, battle_finish, battle_select, battle_start
+from main import ATTACKS, POLICY, SEARCHER
 from schema import Observation
 
 
@@ -48,7 +49,9 @@ def opponent_action(observation: Observation, kind: str, rng: random.Random) -> 
     return list(range(selection["maxCount"]))
 
 
-def play_game(job: tuple[str, int, int], trace_path: Path | None = None) -> GameResult:
+def play_game(
+    job: tuple[str, int, int], trace_path: Path | None = None, search: bool = False
+) -> GameResult:
     opponent, seat, seed = job
     rng = random.Random(seed)
     started = time.perf_counter()
@@ -79,7 +82,10 @@ def play_game(job: tuple[str, int, int], trace_path: Path | None = None) -> Game
                 raise ValueError("Missing live selection")
             contexts.add(selection["context"])
             decision_started = time.perf_counter()
-            if current["yourIndex"] == seat or opponent == "self":
+            if current["yourIndex"] == seat and search:
+                action = SEARCHER.choose(obs)
+                maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
+            elif current["yourIndex"] == seat or opponent == "self":
                 action = POLICY.choose(obs)
                 maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
             else:
@@ -142,18 +148,19 @@ def main() -> None:
         default=["first", "random", "greedy", "self"],
     )
     parser.add_argument("--output", type=Path, default=Path("results/benchmark.json"))
+    parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
     args = parser.parse_args()
     if args.games < 1 or args.workers < 1:
         parser.error("games and workers must be positive")
     jobs = [(name, i % 2, i) for name in args.opponents for i in range(args.games)]
     if args.workers == 1:
-        results = [play_game(job) for job in jobs]
+        results = [play_game(job, search=args.search) for job in jobs]
     else:
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            results = list(executor.map(play_game, jobs))
+            results = list(executor.map(partial(play_game, search=args.search), jobs))
     report = {
-        "engine": "kaggle-environments==1.32.7",
-        "scope": "Public single-game simulator; current Playground compatibility unverified",
+        "engine": SOURCE,
+        "search": args.search,
         "native_rng": "No native seed exposed; Python seed controls only random opponent",
         "summary": summary(results),
         "games": [asdict(result) for result in results],

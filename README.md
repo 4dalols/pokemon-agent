@@ -38,7 +38,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python prepare_assets.py
 .venv/bin/ruff check .
-.venv/bin/mypy main.py policy.py schema.py assets.py engine.py prepare_assets.py benchmark.py package.py tests
+.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py prepare_assets.py benchmark.py package.py tests
 .venv/bin/pytest -q
 .venv/bin/python benchmark.py --games 100 --workers 4 --output results/benchmark.json
 .venv/bin/python package.py
@@ -69,8 +69,28 @@ from Git by default. The runtime agent itself uses only Python's standard librar
 The policy is stateless apart from immutable deck and metadata, so it carries nothing
 between the games of a best-of-three match.
 
-This is a starting heuristic. It does not model every opposing Ability, optimize
-all Trainer combinations, perform simulator search, or include a learned model.
+The heuristic does not model every opposing Ability, optimize all Trainer
+combinations, or include a learned model.
+
+## Rollout search
+
+`search.py` wraps the heuristic with determinized rollouts on the native engine's
+search API (`SearchBegin`/`SearchStep`). At each main-phase decision after turn 1 it
+samples the hidden cards (own deck order and prizes, the opponent's deck, prizes and
+hand, mirroring our deck list when the cards seen so far allow it), plays the top
+heuristic candidates through the simulator with the heuristic acting for both sides
+until the opponent's next turn ends, and picks the candidate with the best averaged
+prize/board outcome; terminal wins and losses dominate. Every other prompt stays
+heuristic.
+
+The engine is taken from `kaggle_environments.envs.cabt.cg.sim` (present in the
+Kaggle runtime), falling back to a `cg` package on `sys.path`; without either the
+agent is purely heuristic. The per-decision budget (`PTCG_SEARCH_BUDGET`, default
+1.5 s; `PTCG_SEARCH_CANDIDATES`, default 6) shrinks with `remainingOverageTime` so a
+best-of-three match stays inside the 600 s overage allowance, and the heuristic
+answer is used whenever the budget is spent or the engine rejects a prediction.
+`benchmark.py --search` plays the search agent against the heuristic opponents; the
+test suite runs with a 0.1 s budget (`tests/conftest.py`).
 
 ## Benchmarks and replay inspection
 
