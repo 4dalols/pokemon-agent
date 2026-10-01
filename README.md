@@ -38,7 +38,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python prepare_assets.py
 .venv/bin/ruff check .
-.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py prepare_assets.py benchmark.py package.py tests
+.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py value.py train_value.py baseline.py prepare_assets.py benchmark.py package.py tests
 .venv/bin/pytest -q
 .venv/bin/python benchmark.py --games 100 --workers 4 --output results/benchmark.json
 .venv/bin/python package.py
@@ -80,8 +80,26 @@ samples the hidden cards (own deck order and prizes, the opponent's deck, prizes
 hand, mirroring our deck list when the cards seen so far allow it), plays the top
 heuristic candidates through the simulator with the heuristic acting for both sides
 until the opponent's next turn ends, and picks the candidate with the best averaged
-prize/board outcome; terminal wins and losses dominate. Every other prompt stays
-heuristic.
+leaf value; terminal wins and losses dominate. Every other prompt stays heuristic.
+
+## Learned leaf evaluation
+
+`value.py` featurizes a `Current` state from one player's point of view (prizes,
+active/bench HP, damage and energy, affordable attack damage after weakness and
+resistance, knockout availability, hand/deck/discard sizes, special conditions, turn
+and side to move) and evaluates it with a one-hidden-layer MLP in pure Python; the
+weights live in `value.json` (about 2k parameters) and are loaded at import time by
+`main.py`. When present, the model's win probability replaces the hand-written
+prize/board score at rollout leaves (`PTCG_VALUE_MODEL=0` restores the heuristic
+score). `train_value.py` regenerates the weights reproducibly: it plays seeded
+self-play games on the native engine (heuristic, short-budget search and the benchmark
+opponents, both seats), labels every MAIN-selection state of both players with the
+final result, and fits the network with numpy, holding out 20% of the games to report
+log-loss and accuracy next to the prior and the heuristic score:
+
+```sh
+.venv/bin/python train_value.py --games 8000 --workers 8 --dataset results/dataset.json
+```
 
 The engine is taken from `kaggle_environments.envs.cabt.cg.sim` (present in the
 Kaggle runtime), falling back to a `cg` package on `sys.path`; without either the
@@ -104,6 +122,9 @@ being hidden as losses. Seats alternate. The default opponents use the same deck
   highest printed base damage. It avoids voluntary retreat and Abilities.
 - `self`: the same baseline on both sides; its assigned-seat win rate is a symmetry
   check, not a measure of strength against a different agent.
+- `main`: the unmodified agent from the `main` branch with its full search budget,
+  imported from a git worktree (`baseline.py`, default `results/main-worktree`,
+  created on demand). Use `--search --opponents main` to compare a change head-to-head.
 
 Parallel games run in separate processes because the native battle is process-global.
 The native API exposes no seed parameter. Python seeds control only the random

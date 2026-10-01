@@ -22,6 +22,11 @@ class Player(TypedDict):
     deckCount: int
     handCount: int
     benchMax: int
+    poisoned: NotRequired[bool]
+    burned: NotRequired[bool]
+    asleep: NotRequired[bool]
+    paralyzed: NotRequired[bool]
+    confused: NotRequired[bool]
 
 
 class Current(TypedDict):
@@ -34,6 +39,7 @@ class Current(TypedDict):
     looking: list[Card | None] | None
     energyAttached: bool
     supporterPlayed: bool
+    firstPlayer: NotRequired[int]
     win: NotRequired[int]
     draw: NotRequired[int]
     round: NotRequired[int]

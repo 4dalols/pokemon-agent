@@ -3,8 +3,10 @@
 For a MAIN selection, hidden cards (own deck order and prizes, the opponent's deck,
 prizes and hand) are sampled; each candidate option is then played through the native
 simulator with the heuristic policy acting for both sides until the opponent's next
-turn ends. Candidates are ranked by the averaged outcome; the heuristic ranking is the
-fallback whenever no native engine is importable or the time budget is spent.
+turn ends. Candidates are ranked by the averaged outcome: terminal results, otherwise
+the learned win probability from `value.py` when weights are loaded, otherwise the
+hand-written prize/board score. The heuristic ranking is the fallback whenever no
+native engine is importable or the time budget is spent.
 """
 
 import ctypes
@@ -17,8 +19,10 @@ from typing import TypedDict, cast
 
 from policy import Policy
 from schema import Current, Observation, Player
+from value import Featurizer, ValueModel
 
 TERMINAL = 10_000.0
+VALUE_SCALE = 1_000.0
 STEP_LIMIT = 400
 
 
@@ -71,9 +75,12 @@ class Searcher:
         budget: float = 1.5,
         candidates: int = 6,
         seed: int | None = None,
+        model: ValueModel | None = None,
     ) -> None:
         self.policy = policy
         self.engine = engine
+        self.model = model
+        self.featurizer = Featurizer(policy.cards, policy.attacks)
         self.budget = budget
         self.candidates = candidates
         self.rng = random.Random(seed)
@@ -201,6 +208,9 @@ class Searcher:
             if current["result"] == me:
                 return TERMINAL
             return -TERMINAL if current["result"] == 1 - me else 0.0
+        if self.model is not None:
+            probability = self.model.predict(self.featurizer.featurize(current, me))
+            return VALUE_SCALE * (2 * probability - 1)
         mine, theirs = current["players"][me], current["players"][1 - me]
         return (
             300.0 * (len(theirs["prize"]) - len(mine["prize"]))

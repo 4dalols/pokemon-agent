@@ -9,9 +9,12 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
+from baseline import DEFAULT_WORKTREE, Chooser, ensure_worktree, load_baseline
 from engine import SOURCE, Battle, battle_finish, battle_select, battle_start
 from main import ATTACKS, POLICY, SEARCHER
 from schema import Observation
+
+BASELINE: dict[Path, Chooser] = {}
 
 
 @dataclass
@@ -49,8 +52,18 @@ def opponent_action(observation: Observation, kind: str, rng: random.Random) -> 
     return list(range(selection["maxCount"]))
 
 
+def baseline(path: Path) -> Chooser:
+    """The unmodified `main` agent (full search budget), loaded once per process."""
+    if path not in BASELINE:
+        BASELINE[path] = load_baseline(path)
+    return BASELINE[path]
+
+
 def play_game(
-    job: tuple[str, int, int], trace_path: Path | None = None, search: bool = False
+    job: tuple[str, int, int],
+    trace_path: Path | None = None,
+    search: bool = False,
+    worktree: Path = DEFAULT_WORKTREE,
 ) -> GameResult:
     opponent, seat, seed = job
     rng = random.Random(seed)
@@ -88,6 +101,8 @@ def play_game(
             elif current["yourIndex"] == seat or opponent == "self":
                 action = POLICY.choose(obs)
                 maximum = max(maximum, (time.perf_counter() - decision_started) * 1000)
+            elif opponent == "main":
+                action = baseline(worktree).choose(obs)
             else:
                 action = opponent_action(obs, opponent, rng)
             if trace_path:
@@ -144,30 +159,44 @@ def main() -> None:
     parser.add_argument(
         "--opponents",
         nargs="+",
-        choices=["first", "random", "greedy", "self"],
+        choices=["first", "random", "greedy", "self", "main"],
         default=["first", "random", "greedy", "self"],
     )
     parser.add_argument("--output", type=Path, default=Path("results/benchmark.json"))
     parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
+    parser.add_argument(
+        "--main-worktree",
+        type=Path,
+        default=DEFAULT_WORKTREE,
+        help="Checkout of the unmodified main agent used by the `main` opponent",
+    )
     args = parser.parse_args()
     if args.games < 1 or args.workers < 1:
         parser.error("games and workers must be positive")
+    if "main" in args.opponents:
+        ensure_worktree(args.main_worktree)
     jobs = [(name, i % 2, i) for name in args.opponents for i in range(args.games)]
+    play = partial(play_game, search=args.search, worktree=args.main_worktree)
+    started = time.perf_counter()
     if args.workers == 1:
-        results = [play_game(job, search=args.search) for job in jobs]
+        results = [play(job) for job in jobs]
     else:
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            results = list(executor.map(partial(play_game, search=args.search), jobs))
+            results = list(executor.map(play, jobs))
+    wall = time.perf_counter() - started
     report = {
         "engine": SOURCE,
         "search": args.search,
         "native_rng": "No native seed exposed; Python seed controls only random opponent",
+        "wall_seconds": wall,
+        "games_per_second": len(jobs) / wall,
         "summary": summary(results),
         "games": [asdict(result) for result in results],
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2))
     print(json.dumps(report["summary"], indent=2))
+    print(f"{len(jobs)} games in {wall:.0f} s ({len(jobs) / wall:.3f} games/s)")
 
 
 if __name__ == "__main__":
