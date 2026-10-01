@@ -1,12 +1,26 @@
 import os
 
 from assets import ROOT, load_catalog, load_deck
+from imitation import BCPolicy, load_model
 from policy import Policy
 from schema import Observation
 from search import Searcher, load_engine
 
 CARDS, ATTACKS = load_catalog(ROOT)
-POLICY = Policy(load_deck(ROOT, CARDS), CARDS, ATTACKS)
+DECK = load_deck(ROOT, CARDS, os.environ.get("PTCG_DECK_FILE", "deck.csv"))
+MODEL = None if os.environ.get("PTCG_HEURISTIC") else load_model(ROOT)
+BC_TYPES = os.environ.get("PTCG_BC_TYPES")
+POLICY = (
+    Policy(DECK, CARDS, ATTACKS)
+    if MODEL is None
+    else BCPolicy(
+        DECK,
+        CARDS,
+        ATTACKS,
+        MODEL,
+        frozenset(int(kind) for kind in BC_TYPES.split(",")) if BC_TYPES else None,
+    )
+)
 SEARCHER = Searcher(
     POLICY,
     load_engine(),

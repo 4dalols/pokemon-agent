@@ -36,9 +36,9 @@ Verified on Ubuntu, Python 3.12, CPU only:
 python3.12 -m venv .venv
 .venv/bin/python -m pip install --no-deps 'kaggle-environments @ git+https://github.com/Kaggle/kaggle-environments@master'
 .venv/bin/python -m pip install -r requirements-dev.txt
-.venv/bin/python prepare_assets.py
+.venv/bin/python prepare_assets.py --deck dragapult
 .venv/bin/ruff check .
-.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py prepare_assets.py benchmark.py package.py tests
+.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py prepare_assets.py benchmark.py package.py imitation.py train_bc.py tests
 .venv/bin/pytest -q
 .venv/bin/python benchmark.py --games 100 --workers 4 --output results/benchmark.json
 .venv/bin/python package.py
@@ -51,8 +51,10 @@ warning about missing `pyspiel` belongs to another environment and does not prev
 cabt battles.
 
 `prepare_assets.py` exports metadata from the resolved native engine and writes the
-deck. It overwrites `cards.json` and `deck.csv`; keep
-modified deck lists elsewhere before rerunning it. The generated files are excluded
+deck. `--deck dragapult` (default; the list played by the top-rated Playground teams)
+or `--deck abomasnow` (the earlier sample list) selects it. It overwrites `cards.json`
+and `deck.csv` and also keeps a `deck-<name>.csv` copy, which `PTCG_DECK_FILE` can
+point `main.py` at for benchmarks. The generated files are excluded
 from Git by default. The runtime agent itself uses only Python's standard library.
 
 ## Strategy
@@ -72,16 +74,46 @@ between the games of a best-of-three match.
 The heuristic does not model every opposing Ability, optimize all Trainer
 combinations, or include a learned model.
 
+## Imitation policy
+
+`imitation.py` ranks options with a linear model over sparse string features learned
+from the public Playground replays (`train_bc.py`, offline): the selection kind and
+context, the option (card identity, type, stage, HP and damage buckets, attached
+energy, attack identity, printed damage and whether it knocks out the defender,
+target zone and owner), the visible board (turn, hand and bench sizes, prizes, deck
+size, both actives, bench and hand contents) and the selections already made this
+turn. For optional prompts a virtual "decline" row is scored alongside the options,
+so `Policy.choose`'s "take options scoring above zero" rule keeps working.
+`BCPolicy` reuses `Policy.choose` (positions, iterative energy payments, counts) and
+only replaces `scores()`; inference is pure Python (about 0.4 ms per decision) from
+`bc_model.json`, which ships in the archive. `main.py` falls back to the heuristic
+policy when the model file is missing or `PTCG_HEURISTIC` is set;
+`PTCG_BC_TYPES=0,1` restricts the learned scores to those selection types (heuristic
+scores for the rest).
+
+Training data: every decision of agents whose episode `avg_score` is at least 800
+(or who belong to the top teams), with the Dragapult list weighted twice; 20% of the
+episodes are held out by hash. Held-out top-1 accuracy per selection type against the
+heuristic policy on the same prompts is written to `results/bc_eval.json`.
+
+```sh
+.venv/bin/python -m pip install kaggle
+KAGGLE_API_TOKEN=... .venv/bin/kaggle datasets download -d kaggle/the-pokemon-company-ptcg-ai-battle-challenge-playground-episodes-2026-09-29 --unzip -p ../ptcg-data/episodes
+.venv/bin/python train_bc.py ../ptcg-data/decisions   # decisions extracted from the episode JSONs
+```
+
 ## Rollout search
 
 `search.py` wraps the heuristic with determinized rollouts on the native engine's
 search API (`SearchBegin`/`SearchStep`). At each main-phase decision after turn 1 it
 samples the hidden cards (own deck order and prizes, the opponent's deck, prizes and
 hand, mirroring our deck list when the cards seen so far allow it), plays the top
-heuristic candidates through the simulator with the heuristic acting for both sides
-until the opponent's next turn ends, and picks the candidate with the best averaged
-prize/board outcome; terminal wins and losses dominate. Every other prompt stays
-heuristic.
+policy candidates through the simulator with the policy acting for both sides until
+the opponent's next turn ends, and picks the candidate with the best averaged
+prize/board outcome; terminal wins and losses dominate. The policy is the imitation
+ranker when its model is present (its same-turn history is snapshotted before the
+rollouts and only the played action is committed), otherwise the heuristic. Every
+other prompt is answered by the policy directly.
 
 The engine is taken from `kaggle_environments.envs.cabt.cg.sim` (present in the
 Kaggle runtime), falling back to a `cg` package on `sys.path`; without either the
@@ -89,8 +121,12 @@ agent is purely heuristic. The per-decision budget (`PTCG_SEARCH_BUDGET`, defaul
 1.5 s; `PTCG_SEARCH_CANDIDATES`, default 6) shrinks with `remainingOverageTime` so a
 best-of-three match stays inside the 600 s overage allowance, and the heuristic
 answer is used whenever the budget is spent or the engine rejects a prediction.
-`benchmark.py --search` plays the search agent against the heuristic opponents; the
-test suite runs with a 0.1 s budget (`tests/conftest.py`).
+`benchmark.py --search` plays the search agent against the heuristic opponents, and
+`--opponents main --main-root ../pokemon-agent-main` against the unmodified `main`
+branch running as a separate process from a git worktree (prepare its `cards.json`
+and `deck.csv` there first); the test suite runs with a 0.1 s budget and the
+heuristic agent (`tests/conftest.py`), the learned policy is covered by
+`tests/test_imitation.py`.
 
 ## Benchmarks and replay inspection
 

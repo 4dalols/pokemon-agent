@@ -13,6 +13,11 @@ class Policy:
         self.attacks = attacks
 
     def choose(self, observation: Observation) -> list[int]:
+        action = self.decide(observation)
+        self.observe(observation, action)
+        return action
+
+    def decide(self, observation: Observation) -> list[int]:
         selection = observation["select"]
         current = observation["current"]
         if selection is None:
@@ -28,6 +33,15 @@ class Policy:
         if selection["minCount"] == 0:
             count = min(count, sum(score > 0 for score in scores))
         return ranked[: max(selection["minCount"], count)]
+
+    def observe(self, observation: Observation, action: list[int]) -> None:
+        """Record a selection actually played (hook for stateful policies)."""
+
+    def snapshot(self) -> tuple[tuple[int, int], list[str]]:
+        return (-1, -1), []
+
+    def restore(self, state: tuple[tuple[int, int], list[str]]) -> None:
+        """Reset any per-turn state captured by `snapshot`."""
 
     @staticmethod
     def player_index(option: Option, current: Current) -> int:

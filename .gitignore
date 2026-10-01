@@ -11,3 +11,4 @@ official-data/
 *.so
 *.dll
 .env
+deck-*.csv

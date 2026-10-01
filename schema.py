@@ -37,6 +37,7 @@ class Current(TypedDict):
     win: NotRequired[int]
     draw: NotRequired[int]
     round: NotRequired[int]
+    firstPlayer: NotRequired[int]
 
 
 class Option(TypedDict):
