@@ -129,3 +129,66 @@ def test_putting_a_hand_card_back_on_the_deck_is_worse_than_ending_the_turn() ->
     main["option"] = [{"type": 10, "area": 7, "index": 0}, {"type": 14}]
     scores = policy.scores(main, current)
     assert scores[0] < scores[1]
+
+
+def test_ex_attackers_do_not_count_damage_against_an_immune_defender() -> None:
+    policy = Policy(deck_list("abomasnow"), CARDS, ATTACKS)
+    current = state(policy.deck)
+    me, them = (
+        current["players"][current["yourIndex"]],
+        current["players"][1 - current["yourIndex"]],
+    )
+    mega: Card = {
+        "id": card("Mega Abomasnow ex"),
+        "serial": 1,
+        "playerIndex": 0,
+        "energies": [3, 3, 3],
+    }
+    kyogre: Card = {"id": card("Kyogre"), "serial": 2, "playerIndex": 0, "energies": [3, 3, 3]}
+    crustle: Card = {"id": card("Crustle"), "serial": 3, "playerIndex": 1, "hp": 140, "maxHp": 140}
+    them["active"] = [crustle]
+    me["active"] = [mega]
+    assert policy.best_damage(current) == 0
+    frost_barrier = CARDS[card("Mega Abomasnow ex")]["attacks"][0]
+    me["active"] = [kyogre]
+    assert policy.best_damage(current) > 0
+    me["active"] = [mega]
+    them["active"] = [
+        {"id": card("Kyogre"), "serial": 4, "playerIndex": 1, "hp": 140, "maxHp": 140}
+    ]
+    open_score = policy.attack_score(frost_barrier, current)
+    them["active"] = [crustle]
+    assert policy.attack_score(frost_barrier, current) < open_score - 100
+
+
+def test_energy_scaling_attacks_count_attached_energy() -> None:
+    policy = Policy(deck_list("hydrapple_ex-teal_mask_ogerpon_ex"), CARDS, ATTACKS)
+    current = state(policy.deck)
+    me = current["players"][current["yourIndex"]]
+    hydrapple: Card = {
+        "id": card("Hydrapple ex"),
+        "serial": 1,
+        "playerIndex": 0,
+        "energies": [1, 1],
+    }
+    ogerpon: Card = {
+        "id": card("Teal Mask Ogerpon ex"),
+        "serial": 2,
+        "playerIndex": 0,
+        "energies": [1, 3],
+    }
+    me["active"] = [hydrapple]
+    me["bench"] = [ogerpon]
+    syrup_storm = next(
+        ATTACKS[i]
+        for i in CARDS[card("Hydrapple ex")]["attacks"]
+        if ATTACKS[i]["name"] == "Syrup Storm"
+    )
+    assert policy.estimate(syrup_storm, hydrapple, current) == 30 + 30 * 3
+    shower = next(a for a in ATTACKS.values() if a["name"] == "Myriad Leaf Shower")
+    current["players"][1 - current["yourIndex"]]["active"] = [
+        {"id": card("Kyogre"), "serial": 9, "playerIndex": 1, "energies": [3, 3, 3]}
+    ]
+    assert policy.estimate(shower, ogerpon, current) == 30 + 30 * 5
+    combo = next(a for a in ATTACKS.values() if a["name"] == "Rapid-Fire Combo")
+    assert policy.estimate(combo, ogerpon, current) == 250

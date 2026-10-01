@@ -10,8 +10,17 @@ TOP_DECK_TEXT = re.compile(r"from (?:your|their) hand on top of (?:your|their) d
 SELF_DAMAGE = re.compile(r"does (\d+) damage to itself")
 DISCARD_OWN_ENERGY = re.compile(r"Discard (\d+|all) Energy from this Pokémon")
 RECOVER_ENERGY = re.compile(r"[Aa]ttach up to (\d+) Basic \{(\w)\} Energy cards? from your discard")
+IMMUNITY = re.compile(
+    r"Prevent all damage done to this Pokémon by attacks from your opponent’s Pokémon \{ex\}"
+)
 PRIZE_SCALING = re.compile(r"(\d+) more damage .* for each Prize card your opponent has taken")
 COUNTER_SCALING = re.compile(r"(\d+) more damage for each damage counter on this Pokémon")
+ENERGY_SCALING = re.compile(
+    r"(\d+) (?:more )?damage for each (?:\{(\w)\} )?Energy attached to "
+    r"(this Pokémon|all of your Pokémon|both Active Pokémon|your opponent’s Active Pokémon)"
+)
+HEADS_SCALING = re.compile(r"(\d+) more damage for each heads")
+ENERGY_LETTERS = {"G": 1, "R": 2, "W": 3, "L": 4, "P": 5, "F": 6, "D": 7, "M": 8}
 SEARCH_ATTACH = re.compile(r"Search your deck for a Basic \{\w\} Energy card and attach")
 ENERGY_SYMBOLS = {"G": 1, "R": 2, "W": 3, "L": 4, "P": 5, "F": 6, "D": 7, "M": 8}
 
@@ -207,6 +216,17 @@ class Policy:
         scaling = COUNTER_SCALING.search(attack["text"])
         if scaling:
             damage += int(scaling.group(1)) * (card.get("maxHp", 0) - card.get("hp", 0)) / 10
+        energy_scaling = ENERGY_SCALING.search(attack["text"])
+        if energy_scaling:
+            damage += int(energy_scaling.group(1)) * self.energy_count(
+                card,
+                current,
+                energy_scaling.group(3),
+                ENERGY_LETTERS.get(energy_scaling.group(2) or ""),
+            )
+        heads = HEADS_SCALING.search(attack["text"])
+        if heads:
+            damage += int(heads.group(1))
         data = self.cards[card["id"]]
         for skill in data["skills"]:
             prizes = PRIZE_SCALING.search(skill["text"])
@@ -214,6 +234,21 @@ class Policy:
                 remaining = current["players"][1 - current["yourIndex"]]["prize"]
                 damage += int(prizes.group(1)) * (6 - len(remaining) if remaining else 0)
         return damage
+
+    def energy_count(self, card: Card, current: Current, scope: str, kind: int | None) -> int:
+        """Energy attached within an attack's scope, optionally of one type only."""
+        player = self.own(current)
+        opponent = current["players"][1 - current["yourIndex"]]
+        if scope == "this Pokémon":
+            pool = [card]
+        elif scope == "all of your Pokémon":
+            pool = [entry for entry in player["active"] + player["bench"] if entry is not None]
+        elif scope == "both Active Pokémon":
+            pool = [entry for entry in [card, self.active(opponent)] if entry is not None]
+        else:
+            pool = [entry for entry in [self.active(opponent)] if entry is not None]
+        energies = [energy for entry in pool for energy in entry.get("energies", [])]
+        return len(energies) if kind is None else energies.count(kind)
 
     def best_attack(self, card: Card, current: Current) -> tuple[AttackData | None, int]:
         """Strongest attack of a Pokémon and how many Energy it still lacks for it."""
@@ -275,7 +310,7 @@ class Policy:
         if "Search your deck" in text and "Pokémon" in text:
             if "discard 2 other cards" in text and player["handCount"] <= 4:
                 return 5
-            needs_basic = len(in_play) < 3 and any(
+            needs_basic = len(in_play) < 4 and any(
                 self.cards[card_id]["basic"] and self.deck_names[self.cards[card_id]["name"]]
                 for card_id in set(self.deck)
             )
@@ -413,6 +448,8 @@ class Policy:
             multiplier = 2 if target["weakness"] == attacking_type else 1
             resistance = 30 if target["resistance"] == attacking_type else 0
         effective = max(0, damage * multiplier - resistance)
+        if active and defending and self.immune(defending, active):
+            effective = 0
         hp = defending.get("hp", 0) if defending else 0
         ko_probability = float(hp > 0 and effective >= hp)
         water, unseen = self.unseen_energy(current)
@@ -461,9 +498,18 @@ class Policy:
         damage = self.estimate(attack, active, current)
         opponent = current["players"][1 - current["yourIndex"]]
         defending = self.active(opponent)
+        if defending and self.immune(defending, active):
+            return 0
         if defending and self.cards[defending["id"]]["weakness"] == attacking_type:
             damage *= 2
         return damage
+
+    def immune(self, defender: Card, attacker: Card) -> bool:
+        """Whether the defender's Ability blocks all attack damage from this attacker."""
+        attacker_data = self.cards[attacker["id"]]
+        if not (attacker_data["ex"] or attacker_data["megaEx"]):
+            return False
+        return any(IMMUNITY.search(skill["text"]) for skill in self.cards[defender["id"]]["skills"])
 
     def gust_worth(self, current: Current) -> float:
         opponent = current["players"][1 - current["yourIndex"]]
@@ -518,8 +564,11 @@ class Policy:
             if "opponent’s Benched Pokémon to the Active Spot" in text:
                 return self.gust_worth(current)
             if data["basic"]:
-                room = len(player["bench"]) < (2 if self.threat.bench_sniper else 3)
-                return self.value(card, current) * 3 if room else -120
+                limit = player["benchMax"]
+                if self.threat.bench_sniper:
+                    limit = min(limit, 2)
+                benched = sum(entry is not None for entry in player["bench"])
+                return self.value(card, current) * 3 if benched < limit else -120
             return self.value(card, current) * 3
         if kind == 10 and card is not None and self.cards[card["id"]]["cardType"] == 0:
             return 450

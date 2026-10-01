@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import random
 import time
 from collections import Counter
@@ -23,6 +24,7 @@ from value import ValueModel, load_model
 OVERAGE = 600.0
 DRAW = 2
 STALL_LIMIT = 3000  # selections; a game still running (both players stalling) is a draw
+MAX_TURNS = 200  # turns; a game still running after this many is a draw
 SIMPLE_OPPONENTS = ("first", "random", "greedy", "self", "main", "field")
 Job = tuple[str, int, int] | tuple[str, int, int, str | None]
 
@@ -132,6 +134,7 @@ def play_game(
     deck: list[int] | None = None,
     opponent_search: bool = False,
     lists: dict[str, list[int]] | None = None,
+    max_turns: int = MAX_TURNS,
 ) -> GameResult:
     opponent, seat, seed = job[:3]
     deck_name = job[3] if len(job) == 4 else None
@@ -167,7 +170,7 @@ def play_game(
             current, selection = obs["current"], obs["select"]
             if current is None:
                 raise ValueError("Missing game state")
-            if current["result"] >= 0 or step == STALL_LIMIT - 1:
+            if current["result"] >= 0 or step == STALL_LIMIT - 1 or current["turn"] > max_turns:
                 return GameResult(
                     opponent,
                     seat,
@@ -234,7 +237,7 @@ def wilson(wins: int, n: int) -> list[float]:
     denominator = 1 + z * z / n
     center = (proportion + z * z / (2 * n)) / denominator
     margin = z * (proportion * (1 - proportion) / n + z * z / (4 * n * n)) ** 0.5 / denominator
-    return [center - margin, center + margin]
+    return [max(0.0, center - margin), min(1.0, center + margin)]
 
 
 def tally(group: list[GameResult]) -> dict[str, object]:
@@ -251,17 +254,19 @@ def tally(group: list[GameResult]) -> dict[str, object]:
     }
 
 
-def summary(results: list[GameResult]) -> dict[str, object]:
+def summary(results: list[GameResult], weights: dict[str, int] | None = None) -> dict[str, object]:
+    """Per-opponent tallies; `weights` (field deck -> entries) adds the entry-weighted rate."""
     groups: dict[str, object] = {}
     for name in sorted({result.opponent for result in results}):
         group = [result for result in results if result.opponent == name]
         n = len(group)
         decks = sorted({result.deck for result in group if result.deck is not None})
-        groups[name] = {
+        by_deck = {
+            deck: tally([result for result in group if result.deck == deck]) for deck in decks
+        }
+        entry: dict[str, object] = {
             **tally(group),
-            "decks": {
-                deck: tally([result for result in group if result.deck == deck]) for deck in decks
-            },
+            "decks": by_deck,
             "max_decision_ms": max(result.max_decision_ms for result in group),
             "opponent_max_decision_ms": max(result.opponent_max_decision_ms for result in group),
             "mean_game_seconds": sum(result.seconds for result in group) / n,
@@ -272,6 +277,13 @@ def summary(results: list[GameResult]) -> dict[str, object]:
             "mean_turns": sum(result.turns for result in group) / n,
             "seats": dict(Counter(result.baseline_seat for result in group)),
         }
+        if name == "field" and weights and decks:
+            total = sum(weights[deck] for deck in decks)
+            entry["weighted_win_rate"] = (
+                sum(weights[deck] * cast(float, by_deck[deck]["win_rate"]) for deck in decks)
+                / total
+            )
+        groups[name] = entry
     return groups
 
 
@@ -301,6 +313,24 @@ def main() -> None:
         help="Checkout of the unmodified main branch used by the 'main' opponent",
     )
     parser.add_argument("--output", type=Path, default=Path("results/benchmark.json"))
+    parser.add_argument(
+        "--seed-offset",
+        type=int,
+        default=0,
+        help="first game seed; use it to extend a run with fresh games",
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=MAX_TURNS,
+        help="score a game still running after this many turns as a draw",
+    )
+    parser.add_argument(
+        "--seed-offset",
+        type=int,
+        default=0,
+        help="first game seed; use it to extend a run with fresh games",
+    )
     parser.add_argument("--search", action="store_true", help="Baseline seat uses rollout search")
     parser.add_argument(
         "--opponent-deck",
@@ -346,17 +376,17 @@ def main() -> None:
         )
     lists = {name: deck for name, (deck, _) in panel.items()}
     lists.update((name, deck_list(name)) for name in DECKS)
+    weights = {name: entries for name, (_, entries) in panel.items()}
     jobs: list[Job] = []
     for name in args.opponents:
         if name == "field":
-            weights = {name: entries for name, (_, entries) in panel.items()}
             jobs.extend(
-                ("field", i % 2, i, deck)
+                ("field", i % 2, args.seed_offset + i, deck)
                 for i, deck in enumerate(field_schedule(weights, args.games))
             )
         else:
             jobs.extend(
-                (name, i % 2, i, name[5:] if name.startswith("deck:") else None)
+                (name, i % 2, args.seed_offset + i, name[5:] if name.startswith("deck:") else None)
                 for i in range(args.games)
             )
     opponent_deck = None
@@ -375,6 +405,7 @@ def main() -> None:
         deck=deck_list(args.deck) if args.deck else None,
         opponent_search=args.opponent_search,
         lists=lists,
+        max_turns=args.max_turns,
     )
     started = time.perf_counter()
     if args.workers == 1:
@@ -394,7 +425,12 @@ def main() -> None:
         "opponent_deck": args.opponent_deck,
         "opponent_search": args.opponent_search,
         "native_rng": "No native seed exposed; Python seed controls only random opponent",
-        "summary": summary(results),
+        "args": {
+            key: str(value) if isinstance(value, Path) else value
+            for key, value in vars(args).items()
+        },
+        "env": {key: os.environ[key] for key in sorted(os.environ) if key.startswith("PTCG_")},
+        "summary": summary(results, weights),
         "games": [asdict(result) for result in results],
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

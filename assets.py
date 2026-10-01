@@ -1,4 +1,5 @@
 import json
+import os
 from collections import Counter
 from pathlib import Path
 from typing import cast
@@ -23,7 +24,7 @@ def load_catalog(root: Path) -> tuple[dict[int, CardData], dict[int, AttackData]
 
 
 def load_deck(root: Path, cards: dict[int, CardData]) -> list[int]:
-    lines = locate(root, "deck.csv").read_text().split("\n")
+    lines = locate(root, os.environ.get("PTCG_DECK_FILE", "deck.csv")).read_text().split("\n")
     deck = [int(line.strip()) for line in lines if line.strip()]
     validate_deck(deck, cards)
     return deck

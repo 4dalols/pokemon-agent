@@ -1,9 +1,10 @@
 # Pokémon TCG CPU baseline
 
 A strategy-based agent for the Pokémon TCG AI Battle Challenge (Kaggle Playground).
-It plays the Mega Abomasnow ex / Kyogre deck shipped as the `kaggle-environments`
-sample deck and is validated against the official Playground SDK (R2 card pool,
-1431 cards) in both single games and the best-of-three Kaggle environment.
+It plays the Mega Kangaskhan ex / Cornerstone Mask Ogerpon ex (Crustle) ladder list,
+chosen by the field benchmark below (the stock Mega Abomasnow ex / Kyogre sample deck
+stays selectable as `abomasnow`), and is validated against the official Playground SDK
+(R2 card pool, 1431 cards) in both single games and the best-of-three Kaggle environment.
 
 ## Official files
 
@@ -38,7 +39,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python prepare_assets.py
 .venv/bin/ruff check .
-.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py value.py train_value.py baseline.py memory.py archetypes.py prediction.py decks.py
+.venv/bin/mypy main.py policy.py schema.py assets.py engine.py search.py value.py train_value.py baseline.py memory.py archetypes.py prediction.py decks.py field.py
 .venv/bin/pytest -q
 .venv/bin/python benchmark.py --games 100 --workers 4 --output results/benchmark.json
 .venv/bin/python package.py
@@ -54,6 +55,8 @@ cabt battles.
 deck. Candidate deck lists live in `decks.py`; `--deck <name>` selects one and
 `DEFAULT_DECK` is what the submission plays. It overwrites `cards.json` and `deck.csv`. The generated files are excluded
 from Git by default. The runtime agent itself uses only Python's standard library.
+At runtime `PTCG_DECK_FILE` names an alternative deck file (relative to the agent
+directory or absolute) to play instead of `deck.csv`.
 
 ## Strategy
 
@@ -179,13 +182,17 @@ includes the largest per-game overage spend. The default opponents use the same 
 - `field`: the ladder panel in `opponent_panel.json` — each list piloted by the
   current policy and search for that deck, games split in proportion to each
   archetype's replay `entries`, alternating seats; the summary breaks the rate down
-  per archetype.
+  per archetype. The same lists live in `field.py` (`PANEL`, slugs registered in
+  `decks.DECKS`, so `--deck <slug>` or `deck:<slug>` plays any of them).
 
 `--deck <name>` makes the benchmarked agent play a candidate deck from `decks.py`
 instead of the one in `deck.csv`. `--opponent-deck <name>` hands the
 `first`/`greedy`/`random`/`self` opponent another 60-card list — an
 `archetypes.LIBRARY` name or a deck from the `--opponent-decks` panel (default
 `opponent_panel.json`) — piloted by the plain policy built for that deck.
+`--seed-offset` extends a finished run with fresh game seeds. A game still running after
+`--max-turns` (default 200; no decided game has ever passed 70) or 3,000 selections is
+scored as a draw, so a pair of decks that cannot finish each other does not hang the run.
 
 Parallel games run in separate processes because the native battle is process-global.
 The native API exposes no seed parameter. Python seeds control only the random
