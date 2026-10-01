@@ -14,10 +14,11 @@ from assets import ROOT, load_deck, load_panel
 from baseline import DEFAULT_WORKTREE, Chooser, ensure_worktree, load_baseline
 from decks import DECKS, deck_list
 from engine import SOURCE, Battle, battle_finish, battle_select, battle_start
-from main import ATTACKS, CARDS, POLICY, SEARCHER, make_searcher
+from main import ATTACKS, CARDS, MODEL, POLICY, SEARCHER, make_searcher
 from policy import Policy
 from schema import Observation
 from search import Searcher
+from value import ValueModel, load_model
 
 OVERAGE = 600.0
 SIMPLE_OPPONENTS = ("first", "random", "greedy", "self", "main", "field")
@@ -25,6 +26,8 @@ Job = tuple[str, int, int] | tuple[str, int, int, str | None]
 
 BASELINE: dict[Path, Chooser] = {}
 AGENTS: dict[tuple[int, ...], tuple[Policy, Searcher]] = {}
+PILOTS: dict[tuple[int, ...], tuple[Policy, Searcher]] = {}
+OPPONENT_MODEL: ValueModel | None = MODEL
 
 
 @dataclass
@@ -87,6 +90,15 @@ def agent_for(deck: list[int] | None) -> tuple[Policy, Searcher]:
     return AGENTS[key]
 
 
+def pilot_for(deck: list[int]) -> tuple[Policy, Searcher]:
+    """The field pilot for an opponent list: current code with the fixed --opponent-model."""
+    key = tuple(deck)
+    if key not in PILOTS:
+        policy = Policy(deck, CARDS, ATTACKS)
+        PILOTS[key] = policy, make_searcher(policy, OPPONENT_MODEL)
+    return PILOTS[key]
+
+
 def validate_opponent(name: str) -> str:
     if name in SIMPLE_OPPONENTS or (name.startswith("deck:") and name[5:] in DECKS):
         return name
@@ -131,7 +143,7 @@ def play_game(
     pilot = policy
     rival: tuple[Policy, Searcher] | None = None
     if deck_name is not None:
-        rival = agent_for((lists or {})[deck_name])
+        rival = pilot_for((lists or {})[deck_name])
         pilot = rival[0]
         decks[1 - seat] = pilot.deck
     elif opponent == "main":
@@ -304,6 +316,12 @@ def main() -> None:
         "--main-ref", default="main", help="Git ref checked out into a missing --main-worktree"
     )
     parser.add_argument(
+        "--opponent-model",
+        type=Path,
+        help="Weight file for the field pilots (default: the shipped model, whatever "
+        "PTCG_VALUE_MODEL selects); '0' disables it",
+    )
+    parser.add_argument(
         "--agent",
         choices=["candidate", "main"],
         default="candidate",
@@ -319,6 +337,11 @@ def main() -> None:
     panel = load_panel(args.opponent_decks, CARDS) if args.opponent_decks.exists() else {}
     if "field" in args.opponents and not panel:
         parser.error(f"the field opponent needs the panel {args.opponent_decks}")
+    if args.opponent_model is not None:
+        global OPPONENT_MODEL
+        OPPONENT_MODEL = (
+            None if str(args.opponent_model) == "0" else load_model(args.opponent_model)
+        )
     lists = {name: deck for name, (deck, _) in panel.items()}
     lists.update((name, deck_list(name)) for name in DECKS)
     jobs: list[Job] = []

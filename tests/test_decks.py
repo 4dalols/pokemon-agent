@@ -109,3 +109,13 @@ def test_agent_for_builds_a_full_searcher_per_deck() -> None:
     assert searcher.model is SEARCHER.model
     assert searcher.tracker is not None and searcher.tracker is not SEARCHER.tracker
     assert agent_for(deck_list("kangaskhan")) == (policy, searcher)
+
+
+def test_field_pilots_are_separate_from_the_measured_agent() -> None:
+    import benchmark
+    from main import POLICY
+
+    pilot, searcher = benchmark.pilot_for(list(POLICY.deck))
+    assert pilot is not POLICY and searcher.tracker is not None
+    assert benchmark.pilot_for(list(POLICY.deck)) == (pilot, searcher)
+    assert searcher.model is benchmark.OPPONENT_MODEL

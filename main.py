@@ -6,7 +6,7 @@ from memory import Tracker
 from policy import Policy
 from schema import Observation
 from search import Searcher, load_engine
-from value import load_model
+from value import ValueModel, load_model
 
 CARDS, ATTACKS = load_catalog(ROOT)
 POLICY = Policy(load_deck(ROOT, CARDS), CARDS, ATTACKS)
@@ -18,7 +18,7 @@ MODEL = (
 )
 
 
-def make_searcher(policy: Policy) -> Searcher:
+def make_searcher(policy: Policy, model: ValueModel | None = MODEL) -> Searcher:
     """The shipped search configuration (environment overrides included) for a deck's policy."""
     return Searcher(
         policy,
@@ -29,7 +29,7 @@ def make_searcher(policy: Policy) -> Searcher:
         halving=os.environ.get("PTCG_SEARCH_HALVING", "1") == "1",
         horizon=int(os.environ.get("PTCG_SEARCH_HORIZON", "1")),
         epsilon=float(os.environ.get("PTCG_SEARCH_EPSILON", "0")),
-        model=MODEL,
+        model=model,
         tracker=Tracker(policy.deck),
     )
 
