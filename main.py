@@ -29,7 +29,6 @@ def make_searcher(policy: Policy, model: ValueModel | None = MODEL) -> Searcher:
         halving=os.environ.get("PTCG_SEARCH_HALVING", "1") == "1",
         horizon=int(os.environ.get("PTCG_SEARCH_HORIZON", "1")),
         epsilon=float(os.environ.get("PTCG_SEARCH_EPSILON", "0")),
-        idle=os.environ.get("PTCG_SEARCH_IDLE", "heuristic"),
         model=model,
         tracker=Tracker(policy.deck),
     )

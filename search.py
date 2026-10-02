@@ -32,7 +32,6 @@ VALUE_SCALE = 1_000.0
 STEP_LIMIT = 400
 RIVAL_CACHE = 256
 MAIN, ENERGY = 0, 4
-END = 14
 LIKELY = 0.5
 
 
@@ -94,7 +93,6 @@ class Searcher:
         horizon: int = 1,
         epsilon: float = 0.0,
         tracker: Tracker | None = None,
-        idle: str = "heuristic",
     ) -> None:
         self.policy = policy
         self.tracker = tracker
@@ -110,7 +108,6 @@ class Searcher:
         self.games = games
         self.horizon = horizon
         self.epsilon = epsilon
-        self.idle = idle
         self.rng = random.Random(seed)
         self.rival = policy
         self.own_key = tuple(sorted(policy.deck))
@@ -174,10 +171,6 @@ class Searcher:
         """Distinct legal answers to try, the heuristic answer first."""
         scores = self.policy.scores(selection, current)
         ranked = self.policy.rank(scores)
-        if self.idle == "heuristic" and selection["type"] == MAIN:
-            ending = {i for i, option in enumerate(selection["option"]) if option["type"] == END}
-            if ranked[0] not in ending and any(scores[i] > 0 for i in ranked if i not in ending):
-                ranked = [i for i in ranked if i not in ending]
         low, high = selection["minCount"], min(selection["maxCount"], len(ranked))
         candidates = [fallback]
         if high <= 1:

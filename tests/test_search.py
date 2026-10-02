@@ -219,19 +219,6 @@ def test_rollouts_model_the_opponent_with_a_policy_for_their_deck() -> None:
     assert rival.power["Zacian ex"] > 0
 
 
-def test_ending_the_turn_is_not_searched_while_useful_actions_remain() -> None:
-    _, selection, current = main_selection()
-    options = selection["option"]
-    ending = [i for i, option in enumerate(options) if option["type"] == 14]
-    scores = POLICY.scores(selection, current)
-    assert ending and max(scores[i] for i in range(len(options)) if i not in ending) > 0
-    fallback = POLICY.choose({"select": selection, "current": current})
-    gated = Searcher(POLICY, None, candidates=len(options))
-    assert ending[0] not in [c[0] for c in gated.candidates_for(selection, current, fallback)]
-    free = Searcher(POLICY, None, candidates=len(options), idle="search")
-    assert ending[0] in [c[0] for c in free.candidates_for(selection, current, fallback)]
-
-
 def test_expected_pokemon_follow_the_archetype_posterior() -> None:
     searcher = Searcher(POLICY, None)
     lucario = {i for i, data in POLICY.cards.items() if data["name"] == "Mega Lucario ex"}
