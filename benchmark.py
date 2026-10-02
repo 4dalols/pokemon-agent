@@ -1,6 +1,5 @@
 import argparse
 import json
-import multiprocessing
 import os
 import random
 import time
@@ -26,7 +25,6 @@ OVERAGE = 600.0
 DRAW = 2
 STALL_LIMIT = 3000  # selections; a game still running (both players stalling) is a draw
 MAX_TURNS = 200  # turns; a game still running after this many is a draw
-TASKS_PER_WORKER = 4  # games per worker process; the engine leaks memory across games
 SIMPLE_OPPONENTS = ("first", "random", "greedy", "self", "main", "field")
 Job = tuple[str, int, int] | tuple[str, int, int, str | None]
 
@@ -407,12 +405,7 @@ def main() -> None:
     if args.workers == 1:
         results = [play(job) for job in jobs]
     else:
-        pool = ProcessPoolExecutor(
-            max_workers=args.workers,
-            max_tasks_per_child=TASKS_PER_WORKER,
-            mp_context=multiprocessing.get_context("spawn"),
-        )
-        with pool as executor:
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
             results = list(executor.map(play, jobs))
     wall = time.perf_counter() - started
     report = {
