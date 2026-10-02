@@ -526,11 +526,20 @@ class Policy:
                 return True
         return False
 
+    @staticmethod
+    def walls(data: CardData) -> bool:
+        """Whether an Ability makes this Pokémon immune to some attackers."""
+        return any(
+            IMMUNITY.search(skill["text"]) or ABILITY_IMMUNITY.search(skill["text"])
+            for skill in data["skills"]
+        )
+
     def incoming(self, defender: Card, current: Current) -> float:
         """Largest hit a known opposing Pokémon could land on this one, Weakness included."""
         opponent = current["players"][1 - current["yourIndex"]]
         data = self.cards[defender["id"]]
         attackers = {card["id"] for card in self.in_play(opponent)} | set(self.threat.attackers)
+        floor = 0.0 if self.walls(data) else float(self.threat.max_damage)
         worst = -inf
         for card_id in attackers:
             attacker = self.cards.get(card_id)
@@ -546,7 +555,7 @@ class Policy:
             )
             if data["weakness"] == attacker["energyType"]:
                 damage *= 2
-            worst = max(worst, damage, float(self.threat.max_damage))
+            worst = max(worst, damage, floor)
         return max(0.0, worst)
 
     def exposed(self, card: Card, current: Current) -> bool:

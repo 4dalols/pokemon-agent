@@ -295,3 +295,31 @@ def test_multi_prize_basics_stay_in_hand_against_a_known_one_hit_knockout() -> N
     assert policy.scores(main, current)[0] == -120
     current["players"][current["yourIndex"]]["bench"] = []
     assert policy.scores(main, current)[0] > 0
+
+
+def test_walls_ignore_the_observed_damage_floor_from_attackers_they_block() -> None:
+    policy = Policy(deck_list("kangaskhan"), CARDS, ATTACKS)
+    current = state(policy.deck)
+    me, them = (
+        current["players"][current["yourIndex"]],
+        current["players"][1 - current["yourIndex"]],
+    )
+    them["active"] = [
+        {"id": card("Mega Kangaskhan ex"), "serial": 1, "playerIndex": 1, "energies": [11, 11, 11]}
+    ]
+    them["bench"] = [{"id": card("Crustle"), "serial": 2, "playerIndex": 1, "energies": [11]}]
+    policy.threat = Threat(max_damage=250)
+    ogerpon: Card = {"id": card("Cornerstone Mask Ogerpon ex"), "serial": 3, "playerIndex": 0}
+    crustle: Card = {"id": card("Crustle"), "serial": 4, "playerIndex": 0}
+    hurt: Card = {"id": card("Mega Kangaskhan ex"), "serial": 5, "playerIndex": 0, "hp": 200}
+    me["active"] = [hurt]
+    me["bench"] = [ogerpon, crustle]
+    assert policy.incoming(ogerpon, current) == 0  # both opposing attackers have Abilities
+    assert policy.incoming(crustle, current) == 120  # only the opposing Crustle gets through
+    assert not policy.exposed(ogerpon, current) and not policy.exposed(crustle, current)
+    assert policy.exposed(hurt, current)
+    me["bench"] = [{"id": card("Dwebble"), "serial": 6, "playerIndex": 0}]
+    me["hand"] = [ogerpon]
+    bench = selection(0, 0)
+    bench["option"] = [{"type": 7, "area": 2, "index": 0}]
+    assert policy.scores(bench, current)[0] > 0
