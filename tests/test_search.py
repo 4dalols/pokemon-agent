@@ -1,4 +1,5 @@
 import copy
+from collections import Counter
 from typing import cast
 
 import pytest
@@ -216,3 +217,14 @@ def test_rollouts_model_the_opponent_with_a_policy_for_their_deck() -> None:
     assert rival is not POLICY
     assert rival.energy_type == POLICY.cards[metal]["energyType"] != POLICY.energy_type
     assert rival.power["Zacian ex"] > 0
+
+
+def test_expected_pokemon_follow_the_archetype_posterior() -> None:
+    searcher = Searcher(POLICY, None)
+    lucario = {i for i, data in POLICY.cards.items() if data["name"] == "Mega Lucario ex"}
+    hariyama = {i for i, data in POLICY.cards.items() if data["name"] == "Hariyama"}
+    assert not lucario & searcher.expected_pokemon(Counter())
+    seen = Counter({card_id: 2 for card_id in lucario} | {card_id: 1 for card_id in hariyama})
+    expected = searcher.expected_pokemon(seen)
+    assert lucario <= expected and hariyama <= expected
+    assert all(POLICY.cards[card_id]["cardType"] == 0 for card_id in expected)

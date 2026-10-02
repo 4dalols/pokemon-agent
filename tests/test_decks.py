@@ -4,6 +4,7 @@ from assets import validate_deck
 from decks import DECKS, deck_list
 from engine import Battle, battle_finish, battle_start
 from main import ATTACKS, CARDS
+from memory import Threat
 from policy import Policy
 from schema import Card, Current, Selection
 
@@ -192,3 +193,133 @@ def test_energy_scaling_attacks_count_attached_energy() -> None:
     assert policy.estimate(shower, ogerpon, current) == 30 + 30 * 5
     combo = next(a for a in ATTACKS.values() if a["name"] == "Rapid-Fire Combo")
     assert policy.estimate(combo, ogerpon, current) == 250
+
+
+def test_ability_pokemon_cannot_damage_an_ability_walled_defender() -> None:
+    policy = Policy(deck_list("kangaskhan"), CARDS, ATTACKS)
+    current = state(policy.deck)
+    me, them = (
+        current["players"][current["yourIndex"]],
+        current["players"][1 - current["yourIndex"]],
+    )
+    ogerpon: Card = {
+        "id": card("Cornerstone Mask Ogerpon ex"),
+        "serial": 1,
+        "playerIndex": 1,
+        "hp": 210,
+        "maxHp": 210,
+    }
+    kangaskhan: Card = {
+        "id": card("Mega Kangaskhan ex"),
+        "serial": 2,
+        "playerIndex": 0,
+        "energies": [11, 11, 11],
+    }
+    dwebble: Card = {"id": card("Dwebble"), "serial": 3, "playerIndex": 0, "energies": [11]}
+    them["active"] = [ogerpon]
+    me["active"] = [kangaskhan]
+    assert policy.best_damage(current) == 0
+    me["active"] = [dwebble]
+    assert policy.best_damage(current) == 0  # Ascension deals no damage
+    assert not policy.immune(ogerpon, dwebble)
+    assert policy.immune(ogerpon, kangaskhan)
+
+
+def lucario_board(policy: Policy) -> tuple[Current, Card, Card]:
+    current = state(policy.deck)
+    me, them = (
+        current["players"][current["yourIndex"]],
+        current["players"][1 - current["yourIndex"]],
+    )
+    kangaskhan: Card = {
+        "id": card("Mega Kangaskhan ex"),
+        "serial": 1,
+        "playerIndex": 0,
+        "hp": 160,
+        "maxHp": 300,
+        "energies": [11],
+    }
+    crustle: Card = {
+        "id": card("Crustle"),
+        "serial": 2,
+        "playerIndex": 0,
+        "hp": 150,
+        "maxHp": 150,
+        "energies": [],
+    }
+    me["active"] = [kangaskhan]
+    me["bench"] = [crustle]
+    them["active"] = [{"id": card("Riolu"), "serial": 3, "playerIndex": 1, "hp": 80, "maxHp": 80}]
+    them["bench"] = []
+    return current, kangaskhan, crustle
+
+
+def test_known_attackers_make_a_doomed_active_a_poor_energy_target() -> None:
+    policy = Policy(deck_list("kangaskhan"), CARDS, ATTACKS)
+    current, kangaskhan, crustle = lucario_board(policy)
+    main = selection(0, 0)
+    energy = next(i for i, c in enumerate(policy.deck) if CARDS[c]["name"] == "Mist Energy")
+    current["players"][current["yourIndex"]]["hand"] = [
+        {"id": energy, "serial": 9, "playerIndex": 0}
+    ]
+    main["option"] = [
+        {"type": 8, "area": 2, "index": 0, "inPlayArea": 4, "inPlayIndex": 0},
+        {"type": 8, "area": 2, "index": 0, "inPlayArea": 5, "inPlayIndex": 0},
+    ]
+    assert not policy.exposed(kangaskhan, current)
+    relaxed = policy.scores(main, current)
+    assert relaxed[0] > relaxed[1]
+    policy.threat = Threat(attackers=(card("Mega Lucario ex"),))
+    assert policy.exposed(kangaskhan, current)
+    assert not policy.exposed(crustle, current)
+    pressed = policy.scores(main, current)
+    assert pressed[1] > pressed[0] > 0
+    assert policy.readiness(kangaskhan, current) < policy.readiness(crustle, current)
+    policy.threat = Threat(attackers=(card("Hariyama"),))
+    assert policy.exposed(crustle, current)
+    policy.threat = Threat(attackers=(card("Riolu"),))
+    assert not policy.exposed(crustle, current) and not policy.exposed(kangaskhan, current)
+
+
+def test_multi_prize_basics_stay_in_hand_against_a_known_one_hit_knockout() -> None:
+    policy = Policy(deck_list("kangaskhan"), CARDS, ATTACKS)
+    current, _, _ = lucario_board(policy)
+    ogerpon = card("Cornerstone Mask Ogerpon ex")
+    current["players"][current["yourIndex"]]["hand"] = [
+        {"id": ogerpon, "serial": 9, "playerIndex": 0}
+    ]
+    main = selection(0, 0)
+    main["option"] = [{"type": 7, "area": 2, "index": 0}]
+    assert policy.scores(main, current)[0] > 0
+    policy.threat = Threat(attackers=(card("Mega Lucario ex"),))
+    assert policy.scores(main, current)[0] == -120
+    current["players"][current["yourIndex"]]["bench"] = []
+    assert policy.scores(main, current)[0] > 0
+
+
+def test_walls_ignore_the_observed_damage_floor_from_attackers_they_block() -> None:
+    policy = Policy(deck_list("kangaskhan"), CARDS, ATTACKS)
+    current = state(policy.deck)
+    me, them = (
+        current["players"][current["yourIndex"]],
+        current["players"][1 - current["yourIndex"]],
+    )
+    them["active"] = [
+        {"id": card("Mega Kangaskhan ex"), "serial": 1, "playerIndex": 1, "energies": [11, 11, 11]}
+    ]
+    them["bench"] = [{"id": card("Crustle"), "serial": 2, "playerIndex": 1, "energies": [11]}]
+    policy.threat = Threat(max_damage=250)
+    ogerpon: Card = {"id": card("Cornerstone Mask Ogerpon ex"), "serial": 3, "playerIndex": 0}
+    crustle: Card = {"id": card("Crustle"), "serial": 4, "playerIndex": 0}
+    hurt: Card = {"id": card("Mega Kangaskhan ex"), "serial": 5, "playerIndex": 0, "hp": 200}
+    me["active"] = [hurt]
+    me["bench"] = [ogerpon, crustle]
+    assert policy.incoming(ogerpon, current) == 0  # both opposing attackers have Abilities
+    assert policy.incoming(crustle, current) == 120  # only the opposing Crustle gets through
+    assert not policy.exposed(ogerpon, current) and not policy.exposed(crustle, current)
+    assert policy.exposed(hurt, current)
+    me["bench"] = [{"id": card("Dwebble"), "serial": 6, "playerIndex": 0}]
+    me["hand"] = [ogerpon]
+    bench = selection(0, 0)
+    bench["option"] = [{"type": 7, "area": 2, "index": 0}]
+    assert policy.scores(bench, current)[0] > 0

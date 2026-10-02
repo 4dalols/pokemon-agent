@@ -18,6 +18,7 @@ import math
 import random
 import time
 from collections import Counter
+from dataclasses import replace
 from typing import TypedDict, cast
 
 from archetypes import Predictor, Sampler
@@ -31,6 +32,7 @@ VALUE_SCALE = 1_000.0
 STEP_LIMIT = 400
 RIVAL_CACHE = 256
 MAIN, ENERGY = 0, 4
+LIKELY = 0.5
 
 
 class SearchState(TypedDict):
@@ -232,12 +234,28 @@ class Searcher:
         try:
             self.tracker.observe(observation)
             if current is not None:
-                self.policy.threat = self.tracker.threat(
-                    current, self.policy.cards, self.policy.attacks
+                threat = self.tracker.threat(current, self.policy.cards, self.policy.attacks)
+                revealed = self.tracker.revealed(self.opponent(current), current)
+                expected = self.expected_pokemon(revealed)
+                self.policy.threat = replace(
+                    threat, attackers=tuple(sorted(set(threat.attackers) | expected))
                 )
         except (KeyError, TypeError, ValueError, AttributeError, IndexError):
             self.tracker.reset()
             self.policy.threat = Threat()
+
+    def expected_pokemon(self, revealed: Counter[int]) -> set[int]:
+        """Pokémon the opponent probably runs: posterior mass over the archetype library."""
+        posterior = self.predictor.posterior(revealed)
+        mass: dict[int, float] = {}
+        for entry in self.predictor.library:
+            weight = posterior.get(entry.name, 0.0)
+            if weight > 0.0:
+                for card_id in entry.cards:
+                    data = self.policy.cards.get(card_id)
+                    if data is not None and data["cardType"] == 0:
+                        mass[card_id] = mass.get(card_id, 0.0) + weight
+        return {card_id for card_id, weight in mass.items() if weight >= LIKELY}
 
     def prepare(self, current: Current) -> None:
         """Resolve the tracker/predictor once per decision; rollouts only reshuffle."""

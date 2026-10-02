@@ -13,6 +13,7 @@ RECOVER_ENERGY = re.compile(r"[Aa]ttach up to (\d+) Basic \{(\w)\} Energy cards?
 IMMUNITY = re.compile(
     r"Prevent all damage done to this Pokémon by attacks from your opponent’s Pokémon \{ex\}"
 )
+ABILITY_IMMUNITY = re.compile(r"by your opponent’s Pokémon that have an Ability")
 PRIZE_SCALING = re.compile(r"(\d+) more damage .* for each Prize card your opponent has taken")
 COUNTER_SCALING = re.compile(r"(\d+) more damage for each damage counter on this Pokémon")
 ENERGY_SCALING = re.compile(
@@ -357,9 +358,8 @@ class Policy:
             return 0
         score = self.base_readiness(card, current)
         data = self.cards[card["id"]]
-        hp = card.get("hp", data["hp"])
-        if 0 < hp <= self.threat.max_damage:
-            score -= 80
+        if self.exposed(card, current):
+            score -= 80 * self.prizes(data)
         if self.threat.weakness is not None and data["energyType"] == self.threat.weakness:
             score += 60
         return score
@@ -485,7 +485,16 @@ class Policy:
             return -120
         power = self.estimate(attack, target, current)
         bonus = min(180.0, power * 1.5) if after == 0 else 0.0
-        return 300 + bonus + power / 10 - len(target.get("energies", [])) * 10
+        worth = 300 + bonus + power / 10 - len(target.get("energies", [])) * 10
+        active = self.active(self.own(current))
+        if (
+            after > 0
+            and active is not None
+            and active["serial"] == target["serial"]
+            and self.exposed(target, current)
+        ):
+            worth -= 200
+        return worth
 
     def best_damage(self, current: Current) -> float:
         active = self.active(self.own(current))
@@ -506,10 +515,57 @@ class Policy:
 
     def immune(self, defender: Card, attacker: Card) -> bool:
         """Whether the defender's Ability blocks all attack damage from this attacker."""
-        attacker_data = self.cards[attacker["id"]]
-        if not (attacker_data["ex"] or attacker_data["megaEx"]):
-            return False
-        return any(IMMUNITY.search(skill["text"]) for skill in self.cards[defender["id"]]["skills"])
+        return self.blocks(self.cards[defender["id"]], self.cards[attacker["id"]])
+
+    @staticmethod
+    def blocks(defender: CardData, attacker: CardData) -> bool:
+        for skill in defender["skills"]:
+            if (attacker["ex"] or attacker["megaEx"]) and IMMUNITY.search(skill["text"]):
+                return True
+            if attacker["skills"] and ABILITY_IMMUNITY.search(skill["text"]):
+                return True
+        return False
+
+    @staticmethod
+    def walls(data: CardData) -> bool:
+        """Whether an Ability makes this Pokémon immune to some attackers."""
+        return any(
+            IMMUNITY.search(skill["text"]) or ABILITY_IMMUNITY.search(skill["text"])
+            for skill in data["skills"]
+        )
+
+    def incoming(self, defender: Card, current: Current) -> float:
+        """Largest hit a known opposing Pokémon could land on this one, Weakness included."""
+        opponent = current["players"][1 - current["yourIndex"]]
+        data = self.cards[defender["id"]]
+        attackers = {card["id"] for card in self.in_play(opponent)} | set(self.threat.attackers)
+        floor = 0.0 if self.walls(data) else float(self.threat.max_damage)
+        worst = -inf
+        for card_id in attackers:
+            attacker = self.cards.get(card_id)
+            if attacker is None or self.blocks(data, attacker):
+                continue
+            damage = max(
+                (
+                    self.base_damage(self.attacks[attack_id])
+                    for attack_id in attacker["attacks"]
+                    if attack_id in self.attacks
+                ),
+                default=0.0,
+            )
+            if data["weakness"] == attacker["energyType"]:
+                damage *= 2
+            worst = max(worst, damage, floor)
+        return max(0.0, worst)
+
+    def exposed(self, card: Card, current: Current) -> bool:
+        """Whether a known opposing attacker can Knock Out this Pokémon in one hit."""
+        hp = card.get("hp", self.cards[card["id"]]["hp"])
+        return 0 < hp <= self.incoming(card, current)
+
+    @staticmethod
+    def prizes(data: CardData) -> int:
+        return 3 if data["megaEx"] else 2 if data["ex"] else 1
 
     def gust_worth(self, current: Current) -> float:
         opponent = current["players"][1 - current["yourIndex"]]
@@ -543,7 +599,8 @@ class Policy:
             data = self.cards[card["id"]]
             if data["cardType"] in (5, 6):
                 worth = self.attach_worth(target, data["energyType"], current)
-                return worth + (80 if option.get("inPlayArea") == 4 and worth > 0 else 0)
+                favoured = worth > 0 and not self.exposed(target, current)
+                return worth + (80 if option.get("inPlayArea") == 4 and favoured else 0)
             if option.get("inPlayArea") == 4 and self.needed(target, current) <= 1:
                 return 340
             return 50
@@ -568,7 +625,15 @@ class Policy:
                 if self.threat.bench_sniper:
                     limit = min(limit, 2)
                 benched = sum(entry is not None for entry in player["bench"])
-                return self.value(card, current) * 3 if benched < limit else -120
+                if benched >= limit:
+                    return -120
+                if (
+                    self.prizes(data) > 1
+                    and len(self.in_play(player)) >= 2
+                    and self.exposed(card, current)
+                ):
+                    return -120
+                return self.value(card, current) * 3
             return self.value(card, current) * 3
         if kind == 10 and card is not None and self.cards[card["id"]]["cardType"] == 0:
             return 450

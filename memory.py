@@ -26,6 +26,7 @@ class Threat:
     bench_sniper: bool = False
     max_damage: int = 0
     weakness: int | None = None
+    attackers: tuple[int, ...] = ()
 
 
 def snipes_bench(attack: AttackData) -> bool:
@@ -228,7 +229,16 @@ class Tracker:
             data = cards[defending["id"]]
             if data["ex"] and data["hp"] >= 280:
                 weakness = data["weakness"]
-        return Threat(sniper, self.max_damage(current), weakness)
+        attackers = tuple(
+            sorted(
+                {
+                    card_id
+                    for card_id in self.opponent(current).identity.values()
+                    if card_id in cards and cards[card_id]["cardType"] == 0
+                }
+            )
+        )
+        return Threat(sniper, self.max_damage(current), weakness, attackers)
 
 
 def visible(player: Player, current: Current) -> list[int]:
